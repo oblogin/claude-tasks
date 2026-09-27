@@ -530,6 +530,53 @@ export function listItems(plan, { status, role, type } = {}) {
     .map((it) => ({ id: it.id, name: it.name, type: it.type, status: it.status, role: it.fm.role || null, what: it.summary?.['Что'] || '', file: path.join(plan.root, it.file) }));
 }
 
+// ─── new: файл из шаблона ───────────────────────────────────────────────────
+
+// Создаёт файл нужного типа из шаблона: ID, папка, имя, frontmatter. Тело (подсказки <!-- -->) заполняет агент.
+export function createItem(plan, type, { title, parent, depends = [], role, priority, size, status, task, date = today() } = {}) {
+  const T = TYPES[type];
+  if (!T) return { error: `неизвестный тип «${type}» (${Object.keys(TYPES).join(', ')})` };
+  title = String(title || '').trim();
+  if (!title) return { error: 'нужно название: --title "Короткое название"' };
+  if (/[\\/:*?"<>|#^[\]]/.test(title)) return { error: 'в названии недопустимы символы \\ / : * ? " < > | # ^ [ ]' };
+  const resolve = (ref, what) => {
+    const it = findItem(plan, ref);
+    if (!it) throw new Error(`${what}: «${ref}» не найден`);
+    return it;
+  };
+  let parentItem = null, taskItem = null, depItems = [];
+  try {
+    if (T.parent) {
+      if (!parent) return { error: `для ${type} нужен родитель (${T.parent}): --parent <ID>` };
+      parentItem = resolve(parent, 'parent');
+      if (parentItem.type !== T.parent) return { error: `родитель ${type} должен быть ${T.parent}, а ${parentItem.id} — ${parentItem.type}` };
+    }
+    if (T.work) depItems = depends.map((d) => resolve(d, 'depends_on'));
+    for (const d of depItems) if (!isWork(d)) return { error: `зависеть можно только от задач, а ${d.id} — ${d.type}` };
+    if (type === 'adr' && task) taskItem = resolve(task, 'task');
+  } catch (e) { return { error: e.message }; }
+  if (priority && !PRIORITIES.includes(priority)) return { error: `priority: ${PRIORITIES.join(', ')}` };
+  if (size && !SIZES.includes(size)) return { error: `size: ${SIZES.join(', ')} (больше L — разбей задачу)` };
+  if (status && !T.statuses.includes(status)) return { error: `статус «${status}» недопустим для ${type}` };
+  if (role && !/^[a-z][a-z0-9-]*$/.test(role)) return { error: 'role — латиница строчными, без пробелов (например, gamedesigner)' };
+
+  const id = nextId(plan, type);
+  const name = `${id} ${title}`;
+  const file = path.join(plan.root, T.folder, `${name}.md`);
+  if (fs.existsSync(file)) return { error: `файл уже есть: ${file}` };
+  let text = fs.readFileSync(path.join(PLUGIN_ROOT, 'templates', `${type}.md`), 'utf8').replace(/\r\n/g, '\n');
+  const values = { id, title, date, role, priority: priority || 'must', size: size || 'M', parent: parentItem?.name, task: taskItem?.name };
+  if (!role) text = text.replace(/^role: "\{\{role\}\}"\n/m, '');
+  if (type === 'adr' && !taskItem) text = text.replace(/^task: "\[\[\{\{task\}\}\]\]"\n/m, '');
+  if (depItems.length) text = text.replace(/^depends_on: \[\]$/m, `depends_on:\n${depItems.map((d) => `  - "[[${d.name}]]"`).join('\n')}`);
+  if (status) text = text.replace(/^status: .*$/m, `status: ${status}`);
+  text = text.replace(/"\{\{(\w+)\}\}"/g, (_, k) => values[k]).replace(/\{\{(\w+)\}\}/g, (_, k) => values[k]);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+  fs.writeFileSync(path.join(plan.root, 'Board.md'), renderBoard(loadPlan(plan.root)));
+  return { id, name, type, file };
+}
+
 // ─── init: структура плана в проекте ────────────────────────────────────────
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -638,6 +685,9 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
   board [--stdout]    пересобрать Board.md (или вывести доску без записи)
   next [--role R]     задачи, готовые к работе, в порядке очереди
   new-id <тип>        следующий свободный ID для типа (epic, feature, task, research, bug, idea, adr)
+  new <тип> --title "Название" [--parent ID] [--depends ID,ID] [--role R]
+      [--priority must|should|could] [--size XS|S|M|L] [--status S] [--task ID]
+                      создать файл из шаблона (ID, папка, frontmatter); тело заполнить после
   list [--status S[,S2]] [--role R] [--type T]
                       элементы плана по фильтру (например, --status in-progress)
   show <ID>           карточка: статус, «Коротко», критерии, незакрытые зависимости, кого блокирует
@@ -710,6 +760,17 @@ export function main(argv = process.argv.slice(2)) {
     console.log(`${res.item.name}: статус ${res.item.status}${args.log ? ', запись в журнале добавлена' : ''}; доска обновлена.`);
     if (res.unblocked.length) console.log(`Разблокированы: ${res.unblocked.map((u) => `${u.id} (${u.status})`).join(', ')}.`);
     if (res.parentComplete) console.log(`Все задачи ${res.parentComplete.name} закрыты — её можно закрыть: set ${res.parentComplete.id} done.`);
+    return 0;
+  }
+  if (cmd === 'new') {
+    const opt = (k) => (args[k] === true || args[k] === undefined ? undefined : String(args[k]));
+    const res = createItem(plan, args._[1], {
+      title: opt('title'), parent: opt('parent'), role: opt('role'), priority: opt('priority'), size: opt('size'), status: opt('status'), task: opt('task'),
+      depends: opt('depends') ? opt('depends').split(',').map((s) => s.trim()).filter(Boolean) : [],
+    });
+    if (args.json) { console.log(JSON.stringify(res, null, 2)); return res.error ? 2 : 0; }
+    if (res.error) { console.error(`Не создано: ${res.error}`); return 2; }
+    console.log(`Создан ${res.name}: ${res.file}\nЗаполни «Коротко», критерии и остальные разделы, убери подсказки <!-- … -->, затем check.`);
     return 0;
   }
   if (cmd === 'list') {
