@@ -7,7 +7,7 @@
 - **Корректировать план по ходу.** Закрыл задачу — агент предлагает поправить будущие, если что-то выяснилось.
 - **Смотреть план в Obsidian.** Задачи — обычные заметки, связи — ссылки `[[…]]`, граф зависимостей строится сам. Плагины Obsidian не нужны.
 
-> **Статус:** в разработке. Работают `/task:init`, скрипт проверки плана и доски; остальные команды — в работе (см. таблицу ниже). План разработки самого плагина ведётся в этом же формате — [Docs/Tasks/Board.md](Docs/Tasks/Board.md).
+> **Статус:** в разработке. Работают `/task:init`, `/task:next`, `/task:done`, скрипт проверки плана и доски; остальные команды — в работе (см. таблицу ниже). План разработки самого плагина ведётся в этом же формате — [Docs/Tasks/Board.md](Docs/Tasks/Board.md).
 
 ---
 
@@ -111,8 +111,8 @@ claude --plugin-dir C:\AI\claude-tasks\plugin
 | `/task:help` | Справка по командам | заглушка |
 | `/task:create` | Обсудить с агентом, что нужно, и оформить задачу (эпик, фичу) со связями в графе | 🔧 |
 | `/task:split` | Разбить эпик на фичи или фичу на задачи с зависимостями | 🔧 |
-| `/task:next` | Взять следующую готовую задачу (или `--role gamedesigner`) | 🔧 |
-| `/task:done` | Закрыть задачу: сверить критерии, записать итог, показать, что разблокировалось | 🔧 |
+| `/task:next` | Взять следующую готовую задачу (или конкретную `T-042`, или `--role gamedesigner`), выполнить её и закрыть — весь цикл в одной сессии | ✅ |
+| `/task:done` | Закрыть задачу отдельно: сверить критерии, записать итог, показать, что разблокировалось. Нужна, если работа шла без `/task:next`, растянулась на несколько сессий или задача ждала вашей проверки (`review`) | ✅ |
 | `/task:replan` | Пересмотреть будущие задачи — правки только после вашего подтверждения | 🔧 |
 | `/task:idea` | Записать идею в бэклог одной фразой | 🔧 |
 | `/task:board` | Проверить план и пересобрать доску | 🔧 |
@@ -124,7 +124,7 @@ claude --plugin-dir C:\AI\claude-tasks\plugin
 1. `/task:init` — создать план в проекте.
 2. `/task:create` — описать цель (эпик MVP), затем `/task:split` — разбить на фичи и задачи.
 3. Открыть `Docs/Tasks` в Obsidian: «Открыть папку как хранилище».
-4. `/task:next` → агент работает → `/task:done`. Повторять.
+4. `/task:next` — агент берёт задачу, выполняет и сам закрывает её. Повторять. `/task:done` — только когда закрываете отдельно (например, после своей проверки задачи в `review`).
 5. Выяснилось что-то важное — `/task:replan`. Пришла мысль на потом — `/task:idea`.
 
 ---
@@ -149,6 +149,9 @@ node plugin/scripts/tasks.mjs check            # проверить план: ф
 node plugin/scripts/tasks.mjs board            # пересобрать Docs/Tasks/Board.md
 node plugin/scripts/tasks.mjs next --role qa   # задачи, готовые к работе, в порядке очереди
 node plugin/scripts/tasks.mjs new-id task      # следующий свободный ID
+node plugin/scripts/tasks.mjs show T-042       # карточка: «Коротко», критерии, зависимости, кого блокирует
+node plugin/scripts/tasks.mjs set T-042 done --log "итог"   # статус + запись в журнал + доска
+node plugin/scripts/tasks.mjs list --status in-progress
 node plugin/scripts/tasks.mjs init --claude-md # создать план в проекте
 ```
 
@@ -169,16 +172,18 @@ plugin/                           ← сам плагин
 ├── skills/
 │   ├── format/SKILL.md           ← спецификация формата (скил task:format)
 │   ├── init/SKILL.md             ← /task:init
+│   ├── next/SKILL.md             ← /task:next
+│   ├── done/SKILL.md             ← /task:done
 │   └── help/SKILL.md             ← /task:help
 ├── scripts/
-│   ├── tasks.mjs                 ← check, board, next, new-id, init
+│   ├── tasks.mjs                 ← check, board, next, list, show, set, new-id, init
 │   └── test/                     ← тесты: node --test
 └── templates/                    ← шаблоны задач и файлов проекта
 Docs/Tasks/                       ← план разработки самого плагина (в плагин не входит)
 ```
 
 - Плагин грузится прямо из папки репозитория: правки видны в новой сессии или после `/reload-plugins`, переустанавливать не нужно.
-- Тесты: `node --test plugin/scripts/test/tasks.test.mjs plugin/scripts/test/init.test.mjs`
+- Тесты: `node --test plugin/scripts/test/*.test.mjs`
 - Проверка манифестов: `claude plugin validate ./plugin` и `claude plugin validate .`
 - Проверить команду без установки: `claude -p "/task:init" --plugin-dir C:\AI\claude-tasks\plugin` в любой папке.
 - Решения по устройству — [ADR-001](Docs/Tasks/Adr/ADR-001%20Устройство%20плагина.md).

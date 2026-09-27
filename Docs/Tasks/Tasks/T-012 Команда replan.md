@@ -2,7 +2,7 @@
 id: T-012
 type: task
 role: programmer
-status: draft
+status: ready
 priority: must
 size: M
 parent: "[[F-04 Команды]]"
@@ -24,3 +24,4 @@ created: 2026-09-27
 - [ ] Каждое изменение отражается в «Журнале» изменённой задачи со ссылкой на причину
 
 ## Журнал
+- **2026-09-27 · programmer (Claude):** зависимость T-011 закрыта → `ready`.

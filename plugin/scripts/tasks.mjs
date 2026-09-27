@@ -457,6 +457,79 @@ export function renderBoard(plan) {
   return L.join('\n');
 }
 
+// ─── show / set: карточка задачи и смена статуса ────────────────────────────
+
+export const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const findItem = (plan, ref) => plan.byId.get(ref) || plan.byName.get(ref) || null;
+
+export function showItem(plan, ref) {
+  analyze(plan);
+  const it = findItem(plan, ref);
+  if (!it) return null;
+  return {
+    id: it.id, name: it.name, type: it.type, status: it.status, role: it.fm.role || null,
+    priority: it.fm.priority || null, size: it.fm.size || null, sprint: it.fm.sprint || null,
+    file: path.join(plan.root, it.file), parent: it.parentName, summary: it.summary || {},
+    criteria: it.criteria, logEntries: it.logEntries ?? 0,
+    openDeps: (it.openDeps || []).map((d) => ({ id: d.id, name: d.name, status: d.status })),
+    blocks: (it.blocks || []).map((b) => ({ id: b.id, name: b.name, status: b.status })),
+  };
+}
+
+// Ставит статус и дописывает запись в «Журнал». Возвращает { item, unblocked } или { error }.
+export function setStatus(plan, ref, status, { log, who = 'Claude', force = false, date = today() } = {}) {
+  analyze(plan);
+  const it = findItem(plan, ref);
+  if (!it) return { error: `задача «${ref}» не найдена` };
+  const T = TYPES[it.type];
+  if (!T) return { error: `у «${it.name}» неизвестный тип` };
+  if (!T.statuses.includes(status)) return { error: `статус «${status}» недопустим для ${it.type} (${T.statuses.join(', ')})` };
+  if (status === 'in-progress' && it.openDeps?.length && !force) {
+    return { error: `не закрыты зависимости: ${it.openDeps.map((d) => `${d.id} (${d.status})`).join(', ')}. Взять всё равно — с --force`, code: 'open-deps' };
+  }
+  const file = path.join(plan.root, it.file);
+  let text = fs.readFileSync(file, 'utf8');
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  text = text.replace(/\r\n/g, '\n');
+  const fmEnd = text.indexOf('\n---', 4);
+  const head = text.slice(0, fmEnd).replace(/^status:.*$/m, `status: ${status}`);
+  text = head + text.slice(fmEnd);
+  if (log) {
+    const entry = `- **${date} · ${who}:** ${log}`;
+    if (!/^## Журнал\s*$/m.test(text)) text = text.replace(/\s*$/, '\n\n## Журнал\n');
+    text = text.replace(/\s*$/, '\n') + (/## Журнал\s*$/.test(text.trimEnd()) ? '\n' : '') + entry + '\n';
+  }
+  fs.writeFileSync(file, text.replace(/\n/g, eol));
+  const fresh = loadPlan(plan.root);
+  fs.writeFileSync(path.join(plan.root, 'Board.md'), renderBoard(fresh));
+  analyze(fresh);
+  const self = fresh.byId.get(it.id);
+  const unblocked = status === 'done'
+    ? (self.blocks || []).filter((b) => !CLOSED.includes(b.status) && b.openDeps.length === 0).map((b) => ({ id: b.id, name: b.name, status: b.status }))
+    : [];
+  // Все задачи фичи закрыты → подсказать закрыть фичу (сама фича не меняется).
+  let parentComplete = null;
+  const parent = self.parentName && fresh.byName.get(self.parentName);
+  if (CLOSED.includes(status) && parent && !CLOSED.includes(parent.status)) {
+    const siblings = fresh.items.filter((x) => isWork(x) && x.parentName === parent.name);
+    if (siblings.every((x) => CLOSED.includes(x.status))) parentComplete = { id: parent.id, name: parent.name, status: parent.status };
+  }
+  return { item: showItem(fresh, it.id), unblocked, parentComplete };
+}
+
+export function listItems(plan, { status, role, type } = {}) {
+  analyze(plan);
+  const statuses = status ? String(status).split(',') : null;
+  return plan.items
+    .filter((it) => it.type && (!type || it.type === type) && (!statuses || statuses.includes(it.status)) && (!role || it.fm.role === role))
+    .sort((a, b) => compareIds(a.id, b.id))
+    .map((it) => ({ id: it.id, name: it.name, type: it.type, status: it.status, role: it.fm.role || null, what: it.summary?.['Что'] || '', file: path.join(plan.root, it.file) }));
+}
+
 // ─── init: структура плана в проекте ────────────────────────────────────────
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -565,6 +638,12 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
   board [--stdout]    пересобрать Board.md (или вывести доску без записи)
   next [--role R]     задачи, готовые к работе, в порядке очереди
   new-id <тип>        следующий свободный ID для типа (epic, feature, task, research, bug, idea, adr)
+  list [--status S[,S2]] [--role R] [--type T]
+                      элементы плана по фильтру (например, --status in-progress)
+  show <ID>           карточка: статус, «Коротко», критерии, незакрытые зависимости, кого блокирует
+  set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force]
+                      сменить статус, дописать запись в «Журнал», пересобрать доску;
+                      in-progress при незакрытых зависимостях — только с --force
   init [--project DIR] [--claude-md] [--obsidian] [--gitignore]
                       создать Docs/Tasks/ в проекте (существующее не трогает);
                       флаги — блок в CLAUDE.md, настройки Obsidian, .obsidian в .gitignore`;
@@ -608,6 +687,36 @@ export function main(argv = process.argv.slice(2)) {
     if (args.json) { console.log(JSON.stringify(cands, null, 2)); return 0; }
     if (!cands.length) { console.log(args.role ? `Нет готовых задач для роли ${args.role}.` : 'Нет задач, готовых к работе.'); return 0; }
     cands.forEach((c, i) => console.log(`${i + 1}. ${c.name}  [${c.priority}${c.size ? ', ' + c.size : ''}${c.role ? ', ' + c.role : ''}${c.sprint ? ', ' + c.sprint : ''}]\n   ${c.what}${c.unblocks.length ? `\n   Разблокирует: ${c.unblocks.join(', ')}` : ''}`));
+    return 0;
+  }
+  if (cmd === 'show') {
+    const card = showItem(plan, args._[1]);
+    if (!card) { console.error(`Задача «${args._[1]}» не найдена.`); return 2; }
+    if (args.json) { console.log(JSON.stringify(card, null, 2)); return 0; }
+    const s = card.summary;
+    console.log([`${card.name}  [${card.status}${card.role ? ', ' + card.role : ''}${card.priority ? ', ' + card.priority : ''}${card.size ? ', ' + card.size : ''}]`, card.file,
+      ...Object.entries(s).map(([k, v]) => `  ${k}: ${v}`),
+      `Критерии: ${card.criteria.total - card.criteria.open} из ${card.criteria.total} отмечено`,
+      `Ждёт: ${card.openDeps.length ? card.openDeps.map((d) => `${d.id} (${d.status})`).join(', ') : '—'}`,
+      `Блокирует: ${card.blocks.length ? card.blocks.map((d) => `${d.id} (${d.status})`).join(', ') : '—'}`].join('\n'));
+    return 0;
+  }
+  if (cmd === 'set') {
+    const [, ref, status] = args._;
+    if (!ref || !status) { console.error('Использование: set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force]'); return 2; }
+    const res = setStatus(plan, ref, status, { log: args.log === true ? undefined : args.log, who: args.who === true ? undefined : args.who, force: !!args.force });
+    if (args.json) { console.log(JSON.stringify(res, null, 2)); return res.error ? (res.code === 'open-deps' ? 3 : 2) : 0; }
+    if (res.error) { console.error(`Не сделано: ${res.error}`); return res.code === 'open-deps' ? 3 : 2; }
+    console.log(`${res.item.name}: статус ${res.item.status}${args.log ? ', запись в журнале добавлена' : ''}; доска обновлена.`);
+    if (res.unblocked.length) console.log(`Разблокированы: ${res.unblocked.map((u) => `${u.id} (${u.status})`).join(', ')}.`);
+    if (res.parentComplete) console.log(`Все задачи ${res.parentComplete.name} закрыты — её можно закрыть: set ${res.parentComplete.id} done.`);
+    return 0;
+  }
+  if (cmd === 'list') {
+    const list = listItems(plan, { status: args.status === true ? undefined : args.status, role: args.role === true ? undefined : args.role, type: args.type === true ? undefined : args.type });
+    if (args.json) { console.log(JSON.stringify(list, null, 2)); return 0; }
+    if (!list.length) { console.log('Ничего не найдено.'); return 0; }
+    for (const x of list) console.log(`${x.name}  [${x.status}${x.role ? ', ' + x.role : ''}]  ${x.what}`);
     return 0;
   }
   if (cmd === 'new-id') {
