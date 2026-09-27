@@ -1,7 +1,7 @@
 {
   "name": "task",
   "displayName": "Задачи (claude-tasks)",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "План задач проекта в Docs/Tasks/: эпики, фичи, задачи, бэклог и граф зависимостей в Markdown для Obsidian; команды /task:* для людей и агентов",
   "author": {
     "name": "oblogin"
