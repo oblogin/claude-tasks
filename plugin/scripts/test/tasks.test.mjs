@@ -236,7 +236,7 @@ function withPlan(files, fn) {
 }
 const task = (id, title, fm) => file({ id, title, type: 'task', fm: { priority: 'must', size: 'S', parent: '"[[F-01 Фича]]"', depends_on: [], ...fm } });
 
-test('next: только ready без открытых зависимостей; порядок спринт → приоритет → разблокирует → ID', () => {
+test('next: только ready без открытых зависимостей; порядок — текущий спринт, затем по ID', () => {
   const p = basePlan();
   p.T1 = task('T-001', 'Первая', { status: 'ready', priority: 'should' });
   p.T2 = task('T-002', 'Вторая', { status: 'ready', depends_on: ['[[T-001 Первая]]'] });          // заблокирована
@@ -247,8 +247,8 @@ test('next: только ready без открытых зависимостей;
   // T-001 разблокирует T-002 → при равном приоритете выше T-007
   p.T7 = task('T-007', 'Седьмая', { status: 'ready', priority: 'should' });
   const ids = withPlan(p, (plan) => nextCandidates(plan).map((c) => c.id));
-  // S-01 — текущий спринт (наименьший среди открытых задач)
-  assert.deepEqual(ids, ['T-005', 'T-004', 'T-001', 'T-003', 'T-007']);
+  // S-01 — текущий спринт (наименьший среди открытых задач); дальше строго по ID — приоритет не переставляет
+  assert.deepEqual(ids, ['T-005', 'T-001', 'T-003', 'T-004', 'T-007']);
 });
 
 test('next --role фильтрует по свободной метке', () => {

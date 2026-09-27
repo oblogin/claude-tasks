@@ -3,6 +3,7 @@
 // Правила — по спецификации plugin/skills/format/SKILL.md. Без npm-зависимостей.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
@@ -314,7 +315,6 @@ export function checkPlan(plan) {
 
 const isWork = (it) => !!TYPES[it.type]?.work;
 const CLOSED = ['done', 'cancelled'];
-const PRIORITY_RANK = { must: 0, should: 1, could: 2 };
 const sprintNum = (s) => (s && /^S-\d+$/.test(s) ? Number(s.slice(2)) : Infinity);
 
 // Для каждой задачи: незакрытые зависимости, кого она блокирует (вычисляется, не хранится).
@@ -337,16 +337,14 @@ export function analyze(plan) {
   return { work, open, currentSprint };
 }
 
-// Кандидаты next: ready + все зависимости done. Порядок: текущий спринт → приоритет → сколько разблокирует → ID.
+// Кандидаты next: ready + все зависимости done. Порядок — по порядку плана: сначала текущий спринт, внутри — по ID.
+// Приоритет и «сколько разблокирует» очередь не переставляют (решение пользователя: задачи идут по порядку).
 export function nextCandidates(plan, { role } = {}) {
   const { work, currentSprint } = analyze(plan);
-  const unblocks = (it) => it.blocks.filter((b) => !CLOSED.includes(b.status)).length;
   return work
     .filter((it) => it.status === 'ready' && it.openDeps.length === 0 && (!role || it.fm.role === role))
     .sort((a, b) =>
       (a.fm.sprint === currentSprint ? 0 : 1) - (b.fm.sprint === currentSprint ? 0 : 1) ||
-      (PRIORITY_RANK[a.fm.priority] ?? 9) - (PRIORITY_RANK[b.fm.priority] ?? 9) ||
-      unblocks(b) - unblocks(a) ||
       compareIds(a.id, b.id))
     .map((it) => ({ id: it.id, name: it.name, file: it.file, role: it.fm.role || null, priority: it.fm.priority, size: it.fm.size, sprint: it.fm.sprint || null, what: it.summary?.['Что'] || '', unblocks: it.blocks.filter((b) => !CLOSED.includes(b.status)).map((b) => b.id) }));
 }
@@ -672,6 +670,123 @@ export function renderHelp(skills, state) {
   return L.join('\n');
 }
 
+// ─── hooks: контроль статусов (T-016) ───────────────────────────────────────
+// Выключить в проекте: "env": { "TASK_HOOKS": "off" } в .claude/settings.json.
+// Владение «сессия → задача» хранится в ${CLAUDE_PLUGIN_DATA}/sessions.json: Stop срабатывает
+// во всех сессиях проекта, а напоминать нужно только той, что взяла задачу.
+
+const hookKey = (input) => `${input.session_id || 'unknown'}${input.agent_id ? ':' + input.agent_id : ''}`;
+
+function stateFile(env) {
+  const dir = env.CLAUDE_PLUGIN_DATA || path.join(os.tmpdir(), 'claude-tasks-hooks');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, 'sessions.json');
+}
+function readState(env) {
+  try { return JSON.parse(fs.readFileSync(stateFile(env), 'utf8')); } catch { return {}; }
+}
+function writeState(env, state) {
+  const weekAgo = Date.now() - 7 * 864e5;
+  for (const [k, v] of Object.entries(state)) if (!v.updated || v.updated < weekAgo) delete state[k];
+  fs.writeFileSync(stateFile(env), JSON.stringify(state, null, 2));
+}
+
+const TASK_FILE_RE = /[\\/]Docs[\\/]Tasks[\\/]/;
+
+// Какие задачи тронул инструмент: [{ id, status? }] — status задан, если его ставил tasks.mjs set.
+function touchedTasks(input, root) {
+  const ti = input.tool_input || {};
+  const out = [];
+  const cmd = typeof ti.command === 'string' ? ti.command : '';
+  for (const m of cmd.matchAll(/tasks\.mjs["']?\s+set\s+["']?(T-\d+)["']?\s+([a-z-]+)/g)) out.push({ id: m[1], status: m[2] });
+  const fp = ti.file_path || ti.path || '';
+  if (fp && TASK_FILE_RE.test(fp)) {
+    const m = path.basename(fp).match(/^(T-\d+) /);
+    // Правка файла «берёт» задачу, только если сама ставит status: in-progress.
+    const written = [ti.new_string, ti.content, ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e.new_string) : [])].filter((s) => typeof s === 'string').join('\n');
+    if (m) out.push({ id: m[1], status: /^status:\s*in-progress\s*$/m.test(written) ? 'in-progress' : undefined });
+  }
+  return out;
+}
+
+export function runHook(event, input, env = process.env) {
+  const none = { code: 0, stdout: '' };
+  if (String(env.TASK_HOOKS || '').toLowerCase() === 'off') return none;
+  const base = input.cwd || env.CLAUDE_PROJECT_DIR || process.cwd();
+  const root = [path.join(base, 'Docs', 'Tasks'), env.CLAUDE_PROJECT_DIR && path.join(env.CLAUDE_PROJECT_DIR, 'Docs', 'Tasks')].find((p) => p && fs.existsSync(p));
+  if (!root) return none;
+  const script = `node "${path.join(PLUGIN_ROOT, 'scripts', 'tasks.mjs')}"`;
+
+  if (event === 'session-start') {
+    const plan = loadPlan(root);
+    const list = (s) => listItems(plan, { status: s }).filter((x) => TYPES[x.type]?.work).map((x) => `${x.id}${x.role ? ` (${x.role})` : ''}`);
+    const inProgress = list('in-progress'), review = list('review');
+    const ready = nextCandidates(plan).map((c) => c.id);
+    const ctx = [
+      'В проекте ведётся план задач: Docs/Tasks/ (плагин task). Формат и правила — скил task:format; загрузи его, прежде чем создавать или вести задачи.',
+      `Главное: взял задачу — сразу статус in-progress и запись в «Журнал»; закончил — отметь критерии, поставь done (или review, если проверяет человек) и запиши итог. Одной командой: ${script} set <ID> <статус> --log "…" --who "<роль> (Claude)". Чужие задачи без согласия человека не меняй.`,
+      `Сейчас в работе: ${inProgress.join(', ') || '—'}. Ждут проверки человеком: ${review.join(', ') || '—'}. Готово к работе: ${ready.slice(0, 5).join(', ') || '—'}.`,
+      'Команды для человека: /task:help.',
+    ].join('\n');
+    return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } }) };
+  }
+
+  if (event === 'post-tool-use') {
+    const ti = input.tool_input || {};
+    const cmd = typeof ti.command === 'string' ? ti.command : '';
+    const fp = ti.file_path || ti.path || '';
+    const planEdited = fp && TASK_FILE_RE.test(fp) && !/Board\.md$/.test(fp);
+    const touched = touchedTasks(input, root);
+    if (!planEdited && !touched.length && !/tasks\.mjs/.test(cmd)) return none;
+
+    let plan = loadPlan(root);
+    if (planEdited) { fs.writeFileSync(path.join(root, 'Board.md'), renderBoard(plan)); plan = loadPlan(root); }
+    // Владение: задача в in-progress после действия этой сессии → запоминаем число записей журнала как точку отсчёта.
+    if (touched.length) {
+      const state = readState(env); const key = hookKey(input);
+      const mine = state[key] || { project: root, tasks: {} };
+      for (const t of touched) {
+        const it = plan.byId.get(t.id);
+        if (!it) continue;
+        if (it.status !== 'in-progress') delete mine.tasks[t.id];                                      // закрыта / отложена — отпускаем
+        else if (t.status === 'in-progress' && !mine.tasks[t.id]) mine.tasks[t.id] = { baseline: it.logEntries }; // взята этой сессией
+      }
+      mine.updated = Date.now(); state[key] = mine; writeState(env, state);
+    }
+    if (planEdited) {
+      const { errors } = checkPlan(plan);
+      if (errors.length) {
+        const lines = errors.slice(0, 10).map((e) => `- ${e.file}: ${e.msg}`);
+        return { code: 0, stdout: JSON.stringify({ decision: 'block', reason: `В плане задач ошибки после правки — исправь:\n${lines.join('\n')}${errors.length > 10 ? `\n…и ещё ${errors.length - 10}` : ''}\nПроверка: ${script} check` }) };
+      }
+    }
+    return none;
+  }
+
+  if (event === 'stop') {
+    if (input.stop_hook_active) return none;
+    const state = readState(env); const key = hookKey(input);
+    const mine = state[key];
+    if (!mine || !Object.keys(mine.tasks || {}).length) return none;
+    const plan = loadPlan(root);
+    const stale = [];
+    for (const [id, info] of Object.entries(mine.tasks)) {
+      const it = plan.byId.get(id);
+      if (!it || it.status !== 'in-progress') { delete mine.tasks[id]; continue; }
+      if (it.logEntries <= info.baseline) stale.push(it);
+    }
+    mine.updated = Date.now(); state[key] = mine; writeState(env, state);
+    if (!stale.length) return none;
+    const names = stale.map((it) => it.name).join(', ');
+    return { code: 0, stdout: JSON.stringify({ decision: 'block', reason:
+      `Задача ${names} в работе (in-progress), но с момента, как ты её взял, в «Журнале» нет ни одной записи. Прежде чем закончить ответ:\n` +
+      `- работа закончена → отметь выполненные критерии и закрой: ${script} set <ID> done|review --log "итог…";\n` +
+      `- работа продолжается или остановлена → запиши, что сделано и на чём остановился: ${script} set <ID> in-progress --log "…".\n` +
+      'Если задачу взяли по ошибке — верни: set <ID> ready --log "причина".' }) };
+  }
+  return none;
+}
+
 // ─── init: структура плана в проекте ────────────────────────────────────────
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -799,6 +914,15 @@ export function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const cmd = args._[0];
   if (!cmd || args.help) { console.log(USAGE); return cmd ? 0 : 2; }
+  if (cmd === 'hook') {
+    // Хуки не должны ломать сессию: любая ошибка — тихий выход.
+    try {
+      let raw = ''; try { raw = fs.readFileSync(0, 'utf8'); } catch { raw = ''; }
+      const res = runHook(args._[1], raw.trim() ? JSON.parse(raw) : {});
+      if (res.stdout) process.stdout.write(res.stdout);
+      return res.code;
+    } catch (e) { process.stderr.write(`task hook: ${e.message}\n`); return 0; }
+  }
   if (cmd === 'help') {
     const skills = readSkills();
     const one = args._[1] && String(args._[1]).replace(/^\/?(task:)?/, '');
