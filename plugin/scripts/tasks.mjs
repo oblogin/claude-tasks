@@ -619,6 +619,59 @@ export function createItem(plan, type, { title, parent, depends = [], role, prio
   return { id, name, type, file };
 }
 
+// ─── help: команды из скилов плагина + подсказка по состоянию ───────────────
+
+// Порядок в справке — по сценарию работы; новые скилы без места в списке идут в конец по алфавиту.
+const HELP_ORDER = ['init', 'create', 'split', 'next', 'done', 'replan', 'idea', 'board', 'help'];
+
+export function readSkills(pluginRoot = PLUGIN_ROOT) {
+  const dir = path.join(pluginRoot, 'skills');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, 'SKILL.md')))
+    .map((e) => {
+      const file = path.join(dir, e.name, 'SKILL.md');
+      const m = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
+      const fm = m ? parseFrontmatter(m[1]).fm : {};
+      const name = fm.name || e.name;
+      return { name, command: `/task:${name}`, args: fm['argument-hint'] || '', description: fm.description || '', userInvoked: fm['disable-model-invocation'] === 'true', file };
+    })
+    .sort((a, b) => {
+      const ia = HELP_ORDER.indexOf(a.name), ib = HELP_ORDER.indexOf(b.name);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.name.localeCompare(b.name);
+    });
+}
+
+export function planState(root) {
+  if (!root || !fs.existsSync(root)) return { exists: false };
+  const plan = loadPlan(root);
+  const byStatus = (s) => listItems(plan, { status: s }).filter((x) => TYPES[x.type]?.work).map((x) => x.id);
+  return { exists: true, root, items: plan.items.length, inProgress: byStatus('in-progress'), review: byStatus('review'), next: nextCandidates(plan).map((c) => c.id) };
+}
+
+// Соглашение для скилов: в description короткая часть идёт до « — » — она и попадает в список справки.
+export const shortDescription = (d) => String(d || '').split(' — ')[0].replace(/[.]\s*$/, '');
+
+export function renderHelp(skills, state) {
+  const L = ['Плагин task — план задач проекта в Docs/Tasks/ (Markdown + Obsidian).', '', 'Команды:'];
+  const cmds = skills.filter((s) => s.userInvoked);
+  const width = Math.max(...cmds.map((s) => `${s.command} ${s.args}`.trim().length));
+  for (const s of cmds) L.push(`  ${`${s.command} ${s.args}`.trim().padEnd(width)}  ${shortDescription(s.description)}`);
+  const bg = skills.filter((s) => !s.userInvoked);
+  if (bg.length) { L.push('', 'Подключаются сами:'); for (const s of bg) L.push(`  task:${s.name} — ${shortDescription(s.description)}`); }
+  L.push('', 'Сейчас:');
+  if (!state.exists) L.push('  Плана в проекте нет — начни с /task:init.');
+  else {
+    if (!state.items) L.push('  План пуст — опиши цель: /task:create, затем /task:split.');
+    if (state.inProgress.length) L.push(`  В работе: ${state.inProgress.join(', ')} — не забудь обновить статус и журнал (или /task:done).`);
+    if (state.review.length) L.push(`  Ждут вашей проверки: ${state.review.join(', ')} — после проверки /task:done.`);
+    if (state.next.length) L.push(`  Готово к работе: ${state.next.slice(0, 5).join(', ')}${state.next.length > 5 ? ' …' : ''} — /task:next.`);
+    else if (state.items) L.push('  Готовых задач нет — /task:board покажет, что блокирует.');
+  }
+  L.push('', 'Подробнее о команде: /task:help <команда>.');
+  return L.join('\n');
+}
+
 // ─── init: структура плана в проекте ────────────────────────────────────────
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -737,6 +790,7 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
   set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force] [--promoted-to ID]
                       сменить статус, дописать запись в «Журнал», пересобрать доску;
                       in-progress при незакрытых зависимостях — только с --force
+  help [команда]      справка по командам плагина (из самих скилов) и что делать сейчас
   init [--project DIR] [--claude-md] [--obsidian] [--gitignore]
                       создать Docs/Tasks/ в проекте (существующее не трогает);
                       флаги — блок в CLAUDE.md, настройки Obsidian, .obsidian в .gitignore`;
@@ -745,6 +799,21 @@ export function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const cmd = args._[0];
   if (!cmd || args.help) { console.log(USAGE); return cmd ? 0 : 2; }
+  if (cmd === 'help') {
+    const skills = readSkills();
+    const one = args._[1] && String(args._[1]).replace(/^\/?(task:)?/, '');
+    if (one) {
+      const s = skills.find((x) => x.name === one);
+      if (!s) { console.error(`Команды «${one}» нет. Есть: ${skills.map((x) => x.name).join(', ')}.`); return 2; }
+      if (args.json) { console.log(JSON.stringify(s, null, 2)); return 0; }
+      console.log(`${s.command} ${s.args}`.trim() + `\n${s.description}\nОписание: ${s.file}`);
+      return 0;
+    }
+    const state = planState(findRoot(args.root === true ? undefined : args.root));
+    if (args.json) { console.log(JSON.stringify({ skills, state }, null, 2)); return 0; }
+    console.log(renderHelp(skills, state));
+    return 0;
+  }
   if (cmd === 'init') {
     const project = path.resolve(args.project && args.project !== true ? args.project : process.env.CLAUDE_PROJECT_DIR || process.cwd());
     const res = initProject(project, { claudeMd: !!args['claude-md'], obsidian: !!args.obsidian, gitignore: !!args.gitignore });

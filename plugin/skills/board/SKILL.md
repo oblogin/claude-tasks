@@ -1,6 +1,6 @@
 ---
 name: board
-description: Проверить план задач и пересобрать доску Docs/Tasks/Board.md — с короткой сводкой в чат и списком проблем.
+description: Проверить план и пересобрать доску — короткая сводка в чат и предложения по найденным проблемам.
 disable-model-invocation: true
 allowed-tools: Bash(node:*), Read, Edit, Skill
 ---

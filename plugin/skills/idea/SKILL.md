@@ -1,7 +1,7 @@
 ---
 name: idea
-description: Быстро записать идею в бэклог плана (Docs/Tasks/Backlog/) одной фразой, без лишних вопросов.
-argument-hint: "<идея своими словами>"
+description: Записать идею в бэклог — одной фразой, без лишних вопросов (Docs/Tasks/Backlog/).
+argument-hint: "<идея>"
 disable-model-invocation: true
 allowed-tools: Bash(node:*), Read, Edit
 ---

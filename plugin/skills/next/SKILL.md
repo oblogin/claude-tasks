@@ -1,6 +1,6 @@
 ---
 name: next
-description: Взять в работу следующую готовую задачу плана (или конкретную по ID) и начать её выполнять.
+description: Взять следующую готовую задачу и выполнить её — весь цикл от in-progress до закрытия в одной сессии; можно конкретную по ID или по роли.
 argument-hint: "[ID] [--role роль]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*), Read, Edit, Skill

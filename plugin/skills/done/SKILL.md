@@ -1,6 +1,6 @@
 ---
 name: done
-description: Закрыть задачу плана — сверить критерии готовности, записать итог в журнал, поставить done или review и показать, что разблокировалось.
+description: Закрыть задачу отдельно от /task:next — сверить критерии, записать итог в журнал, поставить done или review и показать, что разблокировалось.
 argument-hint: "[ID]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*), Read, Edit, Skill
