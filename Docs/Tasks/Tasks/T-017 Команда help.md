@@ -2,7 +2,7 @@
 id: T-017
 type: task
 role: programmer
-status: draft
+status: ready
 priority: must
 size: S
 parent: "[[F-04 Команды]]"
@@ -34,3 +34,4 @@ created: 2026-09-27
 2. Добавить временный скил — он появляется в справке без правки `help`.
 
 ## Журнал
+- **2026-09-27 · programmer (Claude):** зависимости закрыты (T-005) → `ready`.

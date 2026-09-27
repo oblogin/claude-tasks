@@ -1,2 +1,5 @@
 # Личные настройки Obsidian
 .obsidian/
+
+# Локальные настройки Claude Code (включённые плагины и т.п.)
+.claude/settings.local.json

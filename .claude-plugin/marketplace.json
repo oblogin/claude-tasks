@@ -1,0 +1,15 @@
+{
+  "name": "claude-tasks",
+  "description": "Локальный маркетплейс плагина task — план задач проекта в Markdown для Obsidian и агентов Claude Code",
+  "owner": {
+    "name": "oblogin"
+  },
+  "plugins": [
+    {
+      "name": "task",
+      "description": "План задач проекта в Docs/Tasks/: эпики, фичи, задачи, бэклог, граф зависимостей; команды /task:*",
+      "source": "./plugin",
+      "category": "productivity"
+    }
+  ]
+}

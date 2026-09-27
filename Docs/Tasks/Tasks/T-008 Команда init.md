@@ -2,7 +2,7 @@
 id: T-008
 type: task
 role: programmer
-status: draft
+status: ready
 priority: must
 size: S
 parent: "[[F-04 Команды]]"
@@ -31,3 +31,4 @@ created: 2026-09-27
 ## Журнал
 
 - **2026-09-27 · architect (Claude):** убран критерий «спрашивает язык содержимого задач» — пользователь решил: только русский ([[F-01 Формат задач]], решение #1).
+- **2026-09-27 · programmer (Claude):** зависимости закрыты (T-002, T-005) → `ready`.
