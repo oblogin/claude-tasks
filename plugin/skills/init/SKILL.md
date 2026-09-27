@@ -15,7 +15,7 @@ allowed-tools: Bash(node:*), PowerShell(node:*), Read
 ## Шаги
 
 1. **Основа.** Запусти `скрипт init --claude-md`. Он создаст недостающее:
-   - `Docs/Tasks/` с папками `Epics/`, `Features/`, `Tasks/`, `Backlog/`, `Adr/`;
+   - `Docs/Tasks/` с папками `Backlog/` (идеи) и `Adr/` (решения); эпики, фичи и задачи появятся папками по мере создания;
    - `Docs/Tasks/Readme.md` и доску `Docs/Tasks/Board.md`;
    - блок «Работа с задачами» в `CLAUDE.md` проекта — так правила ведения задач видит любой агент проекта. Блок обновляется на месте, остальной текст `CLAUDE.md` не трогается.
 

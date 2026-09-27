@@ -17,15 +17,15 @@ test('new: эпик → фича → задачи с зависимостью; �
   assert.equal(e.id, 'E-01');
   const f = createItem(load(root), 'feature', { title: 'Прыжок', parent: 'E-01', priority: 'should' });
   const t1 = createItem(load(root), 'task', { title: 'Гравитация', parent: 'F-01', role: 'programmer', size: 'S', status: 'ready' });
-  const t2 = createItem(load(root), 'research', { title: 'Модель прыжка', parent: 'F-01 Прыжок', depends: ['T-001'] });
-  assert.deepEqual([f.id, t1.id, t2.id], ['F-01', 'T-001', 'T-002']);
-  assert.ok(t2.file.endsWith(path.join('Tasks', 'T-002 Модель прыжка.md')));
+  const t2 = createItem(load(root), 'research', { title: 'Модель прыжка', parent: 'F-01 Прыжок', depends: ['F01-01'] });
+  assert.deepEqual([f.id, t1.id, t2.id], ['F-01', 'F01-01', 'F01-02']);
+  assert.ok(t2.file.endsWith(path.join('E-01 Прототип', 'F-01 Прыжок', 'F01-02 Модель прыжка.md')), t2.file);
   const text = fs.readFileSync(t2.file, 'utf8');
   assert.match(text, /^type: research$/m);
   assert.match(text, /^parent: "\[\[F-01 Прыжок\]\]"$/m);
-  assert.match(text, /^depends_on:\n {2}- "\[\[T-001 Гравитация\]\]"$/m);
+  assert.match(text, /^depends_on:\n {2}- "\[\[F01-01 Гравитация\]\]"$/m);
   assert.doesNotMatch(text, /^role:/m, 'без role строка убрана');
-  assert.match(text, /^# T-002 Модель прыжка$/m);
+  assert.match(text, /^# F01-02 Модель прыжка$/m);
   assert.doesNotMatch(text, /\{\{/, 'все метки заменены');
   const t1text = fs.readFileSync(t1.file, 'utf8');
   assert.match(t1text, /^role: programmer$/m);
@@ -34,7 +34,7 @@ test('new: эпик → фича → задачи с зависимостью; �
   const r = checkPlan(load(root));
   assert.deepEqual(r.errors, []);
   assert.ok(r.warnings.every((w) => ['summary-empty', 'no-criteria'].includes(w.code)), 'только незаполненное тело');
-  assert.ok(fs.readFileSync(path.join(root, 'Board.md'), 'utf8').includes('[[T-002 Модель прыжка]]'), 'доска обновлена');
+  assert.ok(fs.readFileSync(path.join(root, 'Board.md'), 'utf8').includes('[[F01-02 Модель прыжка]]'), 'доска обновлена');
 }));
 
 test('new: идея и ADR со ссылкой на research', () => project((root) => {
@@ -42,10 +42,10 @@ test('new: идея и ADR со ссылкой на research', () => project((ro
   createItem(load(root), 'feature', { title: 'Ф', parent: 'E-01' });
   createItem(load(root), 'research', { title: 'Выбор', parent: 'F-01' });
   const i = createItem(load(root), 'idea', { title: 'Кооператив' });
-  const a = createItem(load(root), 'adr', { title: 'Решение', task: 'T-001' });
+  const a = createItem(load(root), 'adr', { title: 'Решение', task: 'F01-01' });
   assert.equal(i.id, 'I-001');
   assert.equal(a.id, 'ADR-001');
-  assert.match(fs.readFileSync(a.file, 'utf8'), /^task: "\[\[T-001 Выбор\]\]"$/m);
+  assert.match(fs.readFileSync(a.file, 'utf8'), /^task: "\[\[F01-01 Выбор\]\]"$/m);
   assert.deepEqual(checkPlan(load(root)).errors, []);
 }));
 
@@ -71,12 +71,12 @@ test('идея → задача: promoted_to и статус done, провер�
   createItem(load(root), 'feature', { title: 'Ф', parent: 'E-01' });
   const idea = createItem(load(root), 'idea', { title: 'Кооператив' });
   const task = createItem(load(root), 'task', { title: 'Кооп-режим', parent: 'F-01' });
-  assert.match(setStatus(load(root), 'I-001', 'done', { promotedTo: 'T-999' }).error, /не найден/);
-  assert.match(setStatus(load(root), 'T-001', 'done', { promotedTo: 'F-01' }).error, /только для идей/);
+  assert.match(setStatus(load(root), 'I-001', 'done', { promotedTo: 'F01-99' }).error, /не найден/);
+  assert.match(setStatus(load(root), 'F01-01', 'done', { promotedTo: 'F-01' }).error, /только для идей/);
   const res = setStatus(load(root), idea.id, 'done', { promotedTo: task.id, log: 'взята в план.' });
   assert.equal(res.error, undefined);
   const text = fs.readFileSync(idea.file, 'utf8');
-  assert.match(text, /^status: done\npromoted_to: "\[\[T-001 Кооп-режим\]\]"$/m);
+  assert.match(text, /^status: done\npromoted_to: "\[\[F01-01 Кооп-режим\]\]"$/m);
   const w = checkPlan(load(root)).warnings.filter((x) => x.id === 'I-001').map((x) => x.code);
   assert.ok(!w.includes('no-promoted'));
 }));

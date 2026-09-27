@@ -13,7 +13,8 @@ test('пустой проект: папки, Readme, доска; план про
   const p = tmp();
   try {
     const res = initProject(p);
-    for (const d of ['Epics', 'Features', 'Tasks', 'Backlog', 'Adr']) assert.ok(fs.existsSync(path.join(p, 'Docs', 'Tasks', d, '.gitkeep')), d);
+    assert.ok(!fs.existsSync(path.join(p, 'Docs', 'Tasks', 'Epics')), 'плоских папок типов больше нет');
+    for (const d of ['Backlog', 'Adr']) assert.ok(fs.existsSync(path.join(p, 'Docs', 'Tasks', d, '.gitkeep')), d);
     assert.ok(read(p, 'Docs', 'Tasks', 'Readme.md').includes('# План задач'));
     assert.ok(read(p, 'Docs', 'Tasks', 'Board.md').includes('руками не править'));
     assert.equal(res.items, 0);
@@ -27,7 +28,7 @@ test('повторный init не трогает задачи и Readme, бло
   const p = tmp();
   try {
     initProject(p, { claudeMd: true });
-    const task = path.join(p, 'Docs', 'Tasks', 'Tasks', 'T-001 Моя задача.md');
+    const task = path.join(p, 'Docs', 'Tasks', 'Backlog', 'I-001 Моя идея.md');
     fs.writeFileSync(task, 'моё содержимое');
     fs.writeFileSync(path.join(p, 'Docs', 'Tasks', 'Readme.md'), 'мой readme');
     initProject(p, { claudeMd: true });

@@ -13,15 +13,23 @@ const TASK_STATUSES = ['draft', 'ready', 'in-progress', 'review', 'done', 'cance
 const GROUP_STATUSES = ['draft', 'ready', 'in-progress', 'done', 'cancelled'];
 const MAIN_SUMMARY = ['Что', 'Зачем', 'Готово, когда'];
 
+// Раскладка (иерархия): эпик — папка «E-01 …» в корне, фича — папка «F-07 …» в папке эпика,
+// задачи — файлы «F07-03 …» в папке фичи. Папка эпика/фичи и её заметка называются одинаково.
+// Идеи и ADR — в своих папках Backlog/ и Adr/. У эпиков, фич и задач folder нет: место задаёт родитель.
+const WORK = { statuses: TASK_STATUSES, required: ['priority', 'size', 'parent', 'depends_on'], parent: 'feature', summary: MAIN_SUMMARY, journal: true, work: true, idRe: /^F\d{2,}-\d{2}$/, idHint: 'F07-03 (номер фичи и два знака)' };
 export const TYPES = {
-  epic:     { folder: 'Epics',    prefix: 'E',   width: 2, statuses: GROUP_STATUSES, required: ['priority'], parent: null, summary: MAIN_SUMMARY, journal: true },
-  feature:  { folder: 'Features', prefix: 'F',   width: 2, statuses: GROUP_STATUSES, required: ['priority', 'parent'], parent: 'epic', summary: MAIN_SUMMARY, journal: true },
-  task:     { folder: 'Tasks',    prefix: 'T',   width: 3, statuses: TASK_STATUSES, required: ['priority', 'size', 'parent', 'depends_on'], parent: 'feature', summary: MAIN_SUMMARY, journal: true, work: true },
-  research: { folder: 'Tasks',    prefix: 'T',   width: 3, statuses: TASK_STATUSES, required: ['priority', 'size', 'parent', 'depends_on'], parent: 'feature', summary: MAIN_SUMMARY, journal: true, work: true },
-  bug:      { folder: 'Tasks',    prefix: 'T',   width: 3, statuses: TASK_STATUSES, required: ['priority', 'size', 'parent', 'depends_on'], parent: 'feature', summary: MAIN_SUMMARY, journal: true, work: true },
-  idea:     { folder: 'Backlog',  prefix: 'I',   width: 3, statuses: ['idea', 'done', 'cancelled'], required: [], parent: null, summary: ['Что', 'Зачем'], journal: false },
-  adr:      { folder: 'Adr',      prefix: 'ADR', width: 3, statuses: ['proposed', 'accepted', 'superseded'], required: [], parent: null, summary: ['Решение', 'Почему', 'Следствия'], journal: false },
+  epic:     { statuses: GROUP_STATUSES, required: ['priority'], parent: null, summary: MAIN_SUMMARY, journal: true, idRe: /^E-\d{2,}$/, idHint: 'E-01' },
+  feature:  { statuses: GROUP_STATUSES, required: ['priority', 'parent'], parent: 'epic', summary: MAIN_SUMMARY, journal: true, idRe: /^F-\d{2,}$/, idHint: 'F-01' },
+  task:     WORK,
+  research: WORK,
+  bug:      WORK,
+  idea:     { folder: 'Backlog', prefix: 'I', width: 3, statuses: ['idea', 'done', 'cancelled'], required: [], parent: null, summary: ['Что', 'Зачем'], journal: false, idRe: /^I-\d{3,}$/, idHint: 'I-001' },
+  adr:      { folder: 'Adr', prefix: 'ADR', width: 3, statuses: ['proposed', 'accepted', 'superseded'], required: [], parent: null, summary: ['Решение', 'Почему', 'Следствия'], journal: false, idRe: /^ADR-\d{3,}$/, idHint: 'ADR-001' },
 };
+export const FLAT_FOLDERS = ['Backlog', 'Adr'];
+
+// Номер фичи для ID её задач: F-07 → «F07», F-123 → «F123».
+export const featureCode = (featureId) => String(featureId).replace('-', '');
 
 export const PRIORITIES = ['must', 'should', 'could'];
 export const SIZES = ['XS', 'S', 'M', 'L'];
@@ -184,11 +192,34 @@ export function loadPlan(root) {
 
 // ─── Проверка ───────────────────────────────────────────────────────────────
 
-const idNum = (id) => Number(String(id).split('-').pop());
-export const compareIds = (a, b) => {
-  const pa = String(a).split('-')[0], pb = String(b).split('-')[0];
-  return pa === pb ? idNum(a) - idNum(b) : pa.localeCompare(pb);
+// Сравнение ID по иерархии: префикс, затем числа по порядку (F-07 < F07-01 < F07-02 < F-08, F-99 < F-100).
+const PREFIX_ORDER = ['E', 'F', 'I', 'ADR'];
+const idKey = (id) => {
+  const s = String(id);
+  const prefix = s.match(/^[A-Z]+/)?.[0] || s;
+  return { rank: PREFIX_ORDER.includes(prefix) ? PREFIX_ORDER.indexOf(prefix) : 99, prefix, nums: (s.match(/\d+/g) || []).map(Number) };
 };
+export const compareIds = (a, b) => {
+  const ka = idKey(a), kb = idKey(b);
+  if (ka.rank !== kb.rank || ka.prefix !== kb.prefix) return ka.rank - kb.rank || ka.prefix.localeCompare(kb.prefix);
+  for (let i = 0; i < Math.max(ka.nums.length, kb.nums.length); i++) {
+    const x = ka.nums[i] ?? -1, y = kb.nums[i] ?? -1;
+    if (x !== y) return x - y;
+  }
+  return 0;
+};
+
+// Где должен лежать файл элемента (путь от корня плана) — по родителям. null — если родитель неизвестен.
+export function expectedPath(plan, it) {
+  const T = TYPES[it.type];
+  if (!T) return null;
+  if (T.folder) return `${T.folder}/${it.name}.md`;
+  if (it.type === 'epic') return `${it.name}/${it.name}.md`;
+  const parent = it.parentName && plan.byName.get(it.parentName);
+  if (!parent) return null;
+  const parentDir = parent.file.split('/').slice(0, -1).join('/');
+  return it.type === 'feature' ? `${parentDir}/${it.name}/${it.name}.md` : `${parentDir}/${it.name}.md`;
+}
 
 export function checkPlan(plan) {
   const errors = []; const warnings = [];
@@ -214,12 +245,16 @@ export function checkPlan(plan) {
     if (it.id) {
       if (seenIds.has(it.id)) err(it, 'duplicate-id', `ID ${it.id} уже занят файлом ${seenIds.get(it.id)}`);
       else seenIds.set(it.id, it.file);
-      const re = new RegExp(`^${T.prefix}-\\d{${T.width}}$`);
-      if (!re.test(it.id)) err(it, 'bad-id', `ID «${it.id}» не по формату ${T.prefix}-${'0'.repeat(T.width)}`);
+      if (!T.idRe.test(it.id)) err(it, 'bad-id', `ID «${it.id}» не по формату ${T.idHint}`);
       if (!it.name.startsWith(it.id + ' ')) err(it, 'id-filename', `имя файла должно начинаться с «${it.id} »`);
+      // Задача нумеруется внутри своей фичи: у F-07 — F07-01, F07-02…
+      const parentItem = T.work && it.parentName && plan.byName.get(it.parentName);
+      if (parentItem?.type === 'feature' && T.idRe.test(it.id) && !it.id.startsWith(featureCode(parentItem.id) + '-')) {
+        err(it, 'id-parent', `ID ${it.id} не от своей фичи ${parentItem.id} — ожидается ${featureCode(parentItem.id)}-NN (перенос задачи — командой move)`);
+      }
     }
-    const folder = it.file.split('/').slice(-2, -1)[0];
-    if (folder !== T.folder || it.file.split('/').length !== 2) err(it, 'wrong-folder', `тип ${it.type} должен лежать в ${T.folder}/`);
+    const expected = expectedPath(plan, it);
+    if (expected && expected !== it.file) err(it, 'wrong-folder', `файл должен лежать в ${expected.split('/').slice(0, -1).join('/') || 'корне плана'}/ (сейчас: ${it.file})`);
     if (it.heading !== it.name) err(it, 'heading', it.heading ? `заголовок «# ${it.heading}» не совпадает с именем файла` : 'нет заголовка «# …»');
 
     // Поля
@@ -366,11 +401,23 @@ export function criticalPath(plan) {
   return best;
 }
 
-export function nextId(plan, type) {
+// Следующий свободный ID. Для задач нужна фича: номер берётся внутри неё (F07-01, F07-02…).
+// Номера не переиспользуются: учитываются все файлы, в том числе done и cancelled.
+export function nextId(plan, type, parentRef) {
   const T = TYPES[type];
   if (!T) throw new Error(`неизвестный тип «${type}»`);
-  const nums = plan.items.filter((it) => it.id && String(it.id).startsWith(T.prefix + '-')).map((it) => idNum(it.id)).filter(Number.isFinite);
-  return `${T.prefix}-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(T.width, '0')}`;
+  const max = (re) => Math.max(0, ...plan.items.map((it) => String(it.id || '').match(re)).filter(Boolean).map((m) => Number(m[1])));
+  if (T.work) {
+    const f = parentRef && findItem(plan, parentRef);
+    if (!f || f.type !== 'feature') throw new Error('для задачи нужна фича: new-id task --parent F-07');
+    const code = featureCode(f.id);
+    const n = max(new RegExp(`^${code}-(\\d+)$`)) + 1;
+    if (n > 99) throw new Error(`в фиче ${f.id} уже 99 задач — разбей фичу`);
+    return `${code}-${String(n).padStart(2, '0')}`;
+  }
+  const prefix = { epic: 'E', feature: 'F' }[type] || T.prefix;
+  const width = T.width || 2;
+  return `${prefix}-${String(max(new RegExp(`^${prefix}-(\\d+)$`)) + 1).padStart(width, '0')}`;
 }
 
 // ─── Доска ──────────────────────────────────────────────────────────────────
@@ -600,9 +647,14 @@ export function createItem(plan, type, { title, parent, depends = [], role, prio
   if (status && !T.statuses.includes(status)) return { error: `статус «${status}» недопустим для ${type}` };
   if (role && !/^[a-z][a-z0-9-]*$/.test(role)) return { error: 'role — латиница строчными, без пробелов (например, gamedesigner)' };
 
-  const id = nextId(plan, type);
+  let id;
+  try { id = nextId(plan, type, parentItem?.id); } catch (e) { return { error: e.message }; }
   const name = `${id} ${title}`;
-  const file = path.join(plan.root, T.folder, `${name}.md`);
+  const parentDir = parentItem ? path.dirname(path.join(plan.root, parentItem.file)) : plan.root;
+  const file = T.folder ? path.join(plan.root, T.folder, `${name}.md`)
+    : type === 'epic' ? path.join(plan.root, name, `${name}.md`)
+    : type === 'feature' ? path.join(parentDir, name, `${name}.md`)
+    : path.join(parentDir, `${name}.md`);
   if (fs.existsSync(file)) return { error: `файл уже есть: ${file}` };
   let text = fs.readFileSync(path.join(PLUGIN_ROOT, 'templates', `${type}.md`), 'utf8').replace(/\r\n/g, '\n');
   const values = { id, title, date, role, priority: priority || 'must', size: size || 'M', parent: parentItem?.name, task: taskItem?.name };
@@ -698,10 +750,10 @@ function touchedTasks(input, root) {
   const ti = input.tool_input || {};
   const out = [];
   const cmd = typeof ti.command === 'string' ? ti.command : '';
-  for (const m of cmd.matchAll(/tasks\.mjs["']?\s+set\s+["']?(T-\d+)["']?\s+([a-z-]+)/g)) out.push({ id: m[1], status: m[2] });
+  for (const m of cmd.matchAll(/tasks\.mjs["']?\s+set\s+["']?(F\d{2,}-\d{2}|T-\d+)["']?\s+([a-z-]+)/g)) out.push({ id: m[1], status: m[2] });
   const fp = ti.file_path || ti.path || '';
   if (fp && TASK_FILE_RE.test(fp)) {
-    const m = path.basename(fp).match(/^(T-\d+) /);
+    const m = path.basename(fp).match(/^(F\d{2,}-\d{2}|T-\d+) /);
     // Правка файла «берёт» задачу, только если сама ставит status: in-progress.
     const written = [ti.new_string, ti.content, ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e.new_string) : [])].filter((s) => typeof s === 'string').join('\n');
     if (m) out.push({ id: m[1], status: /^status:\s*in-progress\s*$/m.test(written) ? 'in-progress' : undefined });
@@ -799,7 +851,7 @@ export function initProject(project, { claudeMd = false, obsidian = false, gitig
   const actions = [];
   const did = (what, file) => actions.push({ what, file: path.relative(project, file).split(path.sep).join('/') || '.' });
 
-  for (const dir of ['', ...new Set(Object.values(TYPES).map((t) => t.folder))]) {
+  for (const dir of ['', ...FLAT_FOLDERS]) {
     const d = path.join(root, dir);
     if (!fs.existsSync(d)) { fs.mkdirSync(d, { recursive: true }); did('создана папка', d); }
     // .gitkeep — чтобы пустые папки попали в git; Obsidian скрытые файлы не показывает
@@ -894,7 +946,8 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
   check               проверить формат и граф плана (код выхода 1, если есть ошибки)
   board [--stdout]    пересобрать Board.md (или вывести доску без записи)
   next [--role R]     задачи, готовые к работе, в порядке очереди
-  new-id <тип>        следующий свободный ID для типа (epic, feature, task, research, bug, idea, adr)
+  new-id <тип> [--parent F-ID]
+                      следующий свободный ID (для task/research/bug — внутри фичи --parent)
   new <тип> --title "Название" [--parent ID] [--depends ID,ID] [--role R]
       [--priority must|should|could] [--size XS|S|M|L] [--status S] [--task ID]
                       создать файл из шаблона (ID, папка, frontmatter); тело заполнить после
@@ -1026,8 +1079,8 @@ export function main(argv = process.argv.slice(2)) {
   }
   if (cmd === 'new-id') {
     const type = args._[1];
-    if (!type) { console.error('Укажи тип: new-id task'); return 2; }
-    try { console.log(nextId(plan, type)); return 0; } catch (e) { console.error(e.message); return 2; }
+    if (!type) { console.error('Укажи тип: new-id task --parent F-07'); return 2; }
+    try { console.log(nextId(plan, type, args.parent === true ? undefined : args.parent)); return 0; } catch (e) { console.error(e.message); return 2; }
   }
   console.error(`Неизвестная команда «${cmd}».\n\n${USAGE}`);
   return 2;
