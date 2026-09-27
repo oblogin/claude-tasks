@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 // ─── Модель формата ─────────────────────────────────────────────────────────
 
@@ -457,6 +457,66 @@ export function renderBoard(plan) {
   return L.join('\n');
 }
 
+// ─── init: структура плана в проекте ────────────────────────────────────────
+
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PROJECT_TPL = path.join(PLUGIN_ROOT, 'templates', 'project');
+const BLOCK_RE = /<!-- task:begin[\s\S]*?<!-- task:end -->\n?/;
+
+// Создаёт недостающее и никогда не трогает существующие задачи. Возвращает список действий.
+export function initProject(project, { claudeMd = false, obsidian = false, gitignore = false } = {}) {
+  const root = path.join(project, 'Docs', 'Tasks');
+  const actions = [];
+  const did = (what, file) => actions.push({ what, file: path.relative(project, file).split(path.sep).join('/') || '.' });
+
+  for (const dir of ['', ...new Set(Object.values(TYPES).map((t) => t.folder))]) {
+    const d = path.join(root, dir);
+    if (!fs.existsSync(d)) { fs.mkdirSync(d, { recursive: true }); did('создана папка', d); }
+    // .gitkeep — чтобы пустые папки попали в git; Obsidian скрытые файлы не показывает
+    if (dir && fs.readdirSync(d).length === 0) fs.writeFileSync(path.join(d, '.gitkeep'), '');
+  }
+  const readme = path.join(root, 'Readme.md');
+  if (!fs.existsSync(readme)) { fs.copyFileSync(path.join(PROJECT_TPL, 'Readme.md'), readme); did('создан', readme); }
+  else did('уже есть', readme);
+
+  if (claudeMd) {
+    const file = path.join(project, 'CLAUDE.md');
+    const block = fs.readFileSync(path.join(PROJECT_TPL, 'claude-md-block.md'), 'utf8').replace(/\r\n/g, '\n');
+    const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n') : null;
+    if (cur === null) { fs.writeFileSync(file, block); did('создан с блоком «Работа с задачами»', file); }
+    else if (BLOCK_RE.test(cur)) {
+      const next = cur.replace(BLOCK_RE, block);
+      if (next !== cur) { fs.writeFileSync(file, next); did('обновлён блок «Работа с задачами»', file); } else did('блок уже актуален', file);
+    } else { fs.writeFileSync(file, cur.replace(/\s*$/, '\n\n') + block); did('добавлен блок «Работа с задачами»', file); }
+  }
+
+  if (obsidian) {
+    const settings = JSON.parse(fs.readFileSync(path.join(PROJECT_TPL, 'obsidian.json'), 'utf8'));
+    const dir = path.join(root, '.obsidian');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [name, values] of Object.entries(settings)) {
+      const file = path.join(dir, name);
+      let cur = {};
+      if (fs.existsSync(file)) { try { cur = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { cur = {}; } }
+      fs.writeFileSync(file, JSON.stringify({ ...cur, ...values }, null, 2));
+      did('настройки Obsidian', file);
+    }
+  }
+
+  if (gitignore) {
+    const file = path.join(project, '.gitignore');
+    const line = 'Docs/Tasks/.obsidian/';
+    const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    if (cur.split(/\r?\n/).some((l) => l.trim() === line || l.trim() === '.obsidian/')) did('уже игнорирует .obsidian', file);
+    else { fs.writeFileSync(file, cur.replace(/\s*$/, cur ? '\n\n' : '') + `# Личные настройки Obsidian\n${line}\n`); did('добавлено игнорирование Docs/Tasks/.obsidian/', file); }
+  }
+
+  const plan = loadPlan(root);
+  fs.writeFileSync(path.join(root, 'Board.md'), renderBoard(plan));
+  did('доска пересобрана', path.join(root, 'Board.md'));
+  return { project, root, actions, items: plan.items.length };
+}
+
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 export function findRoot(explicit) {
@@ -504,12 +564,23 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
   check               проверить формат и граф плана (код выхода 1, если есть ошибки)
   board [--stdout]    пересобрать Board.md (или вывести доску без записи)
   next [--role R]     задачи, готовые к работе, в порядке очереди
-  new-id <тип>        следующий свободный ID для типа (epic, feature, task, research, bug, idea, adr)`;
+  new-id <тип>        следующий свободный ID для типа (epic, feature, task, research, bug, idea, adr)
+  init [--project DIR] [--claude-md] [--obsidian] [--gitignore]
+                      создать Docs/Tasks/ в проекте (существующее не трогает);
+                      флаги — блок в CLAUDE.md, настройки Obsidian, .obsidian в .gitignore`;
 
 export function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const cmd = args._[0];
   if (!cmd || args.help) { console.log(USAGE); return cmd ? 0 : 2; }
+  if (cmd === 'init') {
+    const project = path.resolve(args.project && args.project !== true ? args.project : process.env.CLAUDE_PROJECT_DIR || process.cwd());
+    const res = initProject(project, { claudeMd: !!args['claude-md'], obsidian: !!args.obsidian, gitignore: !!args.gitignore });
+    if (args.json) { console.log(JSON.stringify(res, null, 2)); return 0; }
+    console.log(`План: ${res.root} (элементов плана: ${res.items})`);
+    for (const a of res.actions) console.log(`  ${a.what}: ${a.file}`);
+    return 0;
+  }
   const root = findRoot(args.root);
   if (!root || !fs.existsSync(root)) { console.error('Не найдена папка плана Docs/Tasks (укажи --root).'); return 2; }
   const plan = loadPlan(root);

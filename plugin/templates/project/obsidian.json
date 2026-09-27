@@ -1,0 +1,17 @@
+{
+  "app.json": {
+    "propertiesInDocument": "hidden",
+    "showInlineTitle": false
+  },
+  "graph.json": {
+    "search": "-file:Board -file:Readme",
+    "showArrow": true,
+    "colorGroups": [
+      { "query": "path:Epics", "color": { "a": 1, "rgb": 15026253 } },
+      { "query": "path:Features", "color": { "a": 1, "rgb": 16098596 } },
+      { "query": "path:Tasks/", "color": { "a": 1, "rgb": 3900150 } },
+      { "query": "path:Adr", "color": { "a": 1, "rgb": 3187820 } },
+      { "query": "path:Backlog", "color": { "a": 1, "rgb": 9145752 } }
+    ]
+  }
+}
