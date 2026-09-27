@@ -233,6 +233,11 @@ export function checkPlan(plan) {
     }
   }
 
+  // Одинаковые имена файлов в разных папках — ссылка [[Имя]] становится неоднозначной
+  const byBase = new Map();
+  for (const it of plan.all) byBase.set(it.name, [...(byBase.get(it.name) || []), it.file]);
+  for (const [name, files] of byBase) if (files.length > 1) for (const f of files.slice(1)) errors.push({ file: f, id: null, code: 'duplicate-name', msg: `имя «${name}» уже есть: ${files[0]} — ссылки [[${name}]] неоднозначны` });
+
   const seenIds = new Map();
   for (const it of plan.items) {
     if (it.noFrontmatter) { err(it, 'no-frontmatter', 'нет frontmatter (блока --- в начале файла)'); continue; }
@@ -733,30 +738,39 @@ export function renderHelp(skills, state) {
 
 const hookKey = (input) => `${input.session_id || 'unknown'}${input.agent_id ? ':' + input.agent_id : ''}`;
 
-function stateFile(env) {
-  const dir = env.CLAUDE_PLUGIN_DATA || path.join(os.tmpdir(), 'claude-tasks-hooks');
+// Отдельный файл на сессию (ключ session[:agent]) — параллельные сессии не перетирают друг друга.
+function stateFile(env, key) {
+  const dir = path.join(env.CLAUDE_PLUGIN_DATA || path.join(os.tmpdir(), 'claude-tasks-hooks'), 'sessions');
   fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, 'sessions.json');
+  return path.join(dir, `${key.replace(/[^\w.-]/g, '_')}.json`);
 }
-function readState(env) {
-  try { return JSON.parse(fs.readFileSync(stateFile(env), 'utf8')); } catch { return {}; }
+function readState(env, key) {
+  try { return JSON.parse(fs.readFileSync(stateFile(env, key), 'utf8')); } catch { return null; }
 }
-function writeState(env, state) {
-  const weekAgo = Date.now() - 7 * 864e5;
-  for (const [k, v] of Object.entries(state)) if (!v.updated || v.updated < weekAgo) delete state[k];
-  fs.writeFileSync(stateFile(env), JSON.stringify(state, null, 2));
+function writeState(env, key, mine) {
+  mine.updated = Date.now();
+  fs.writeFileSync(stateFile(env, key), JSON.stringify(mine, null, 2));
+  // Уборка: состояния сессий старше недели
+  const dir = path.dirname(stateFile(env, key)); const weekAgo = Date.now() - 7 * 864e5;
+  for (const f of fs.readdirSync(dir)) { try { if (fs.statSync(path.join(dir, f)).mtimeMs < weekAgo) fs.rmSync(path.join(dir, f)); } catch { /* уже удалён */ } }
 }
 
-const TASK_FILE_RE = /[\\/]Docs[\\/]Tasks[\\/]/;
+// Файл внутри плана этого проекта? (а не в Docs/Tasks другого проекта)
+function insidePlan(fp, root, cwd) {
+  if (!fp) return false;
+  const rel = path.relative(root, path.resolve(cwd || root, fp));
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
 
 // Какие задачи тронул инструмент: [{ id, status? }] — status задан, если его ставил tasks.mjs set.
 function touchedTasks(input, root) {
   const ti = input.tool_input || {};
   const out = [];
   const cmd = typeof ti.command === 'string' ? ti.command : '';
-  for (const m of cmd.matchAll(/tasks\.mjs["']?\s+set\s+["']?(F\d{2,}-\d{2}|T-\d+)["']?\s+([a-z-]+)/g)) out.push({ id: m[1], status: m[2] });
+  // set с явным --root относится к другому плану — не наш
+  if (!/--root\b/.test(cmd)) for (const m of cmd.matchAll(/tasks\.mjs["']?\s+set\s+["']?(F\d{2,}-\d{2}|T-\d+)["']?\s+([a-z-]+)/g)) out.push({ id: m[1], status: m[2] });
   const fp = ti.file_path || ti.path || '';
-  if (fp && TASK_FILE_RE.test(fp)) {
+  if (insidePlan(fp, root, input.cwd)) {
     const m = path.basename(fp).match(/^(F\d{2,}-\d{2}|T-\d+) /);
     // Правка файла «берёт» задачу, только если сама ставит status: in-progress.
     const written = [ti.new_string, ti.content, ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e.new_string) : [])].filter((s) => typeof s === 'string').join('\n');
@@ -791,7 +805,7 @@ export function runHook(event, input, env = process.env) {
     const ti = input.tool_input || {};
     const cmd = typeof ti.command === 'string' ? ti.command : '';
     const fp = ti.file_path || ti.path || '';
-    const planEdited = fp && TASK_FILE_RE.test(fp) && !/Board\.md$/.test(fp);
+    const planEdited = insidePlan(fp, root, input.cwd) && !/Board\.md$/.test(fp);
     const touched = touchedTasks(input, root);
     if (!planEdited && !touched.length && !/tasks\.mjs/.test(cmd)) return none;
 
@@ -799,15 +813,15 @@ export function runHook(event, input, env = process.env) {
     if (planEdited) { fs.writeFileSync(path.join(root, 'Board.md'), renderBoard(plan)); plan = loadPlan(root); }
     // Владение: задача в in-progress после действия этой сессии → запоминаем число записей журнала как точку отсчёта.
     if (touched.length) {
-      const state = readState(env); const key = hookKey(input);
-      const mine = state[key] || { project: root, tasks: {} };
+      const key = hookKey(input);
+      const mine = readState(env, key) || { project: root, tasks: {} };
       for (const t of touched) {
         const it = plan.byId.get(t.id);
         if (!it) continue;
         if (it.status !== 'in-progress') delete mine.tasks[t.id];                                      // закрыта / отложена — отпускаем
         else if (t.status === 'in-progress' && !mine.tasks[t.id]) mine.tasks[t.id] = { baseline: it.logEntries }; // взята этой сессией
       }
-      mine.updated = Date.now(); state[key] = mine; writeState(env, state);
+      writeState(env, key, mine);
     }
     if (planEdited) {
       const { errors } = checkPlan(plan);
@@ -821,8 +835,8 @@ export function runHook(event, input, env = process.env) {
 
   if (event === 'stop') {
     if (input.stop_hook_active) return none;
-    const state = readState(env); const key = hookKey(input);
-    const mine = state[key];
+    const key = hookKey(input);
+    const mine = readState(env, key);
     if (!mine || !Object.keys(mine.tasks || {}).length) return none;
     const plan = loadPlan(root);
     const stale = [];
@@ -831,7 +845,7 @@ export function runHook(event, input, env = process.env) {
       if (!it || it.status !== 'in-progress') { delete mine.tasks[id]; continue; }
       if (it.logEntries <= info.baseline) stale.push(it);
     }
-    mine.updated = Date.now(); state[key] = mine; writeState(env, state);
+    writeState(env, key, mine);
     if (!stale.length) return none;
     const names = stale.map((it) => it.name).join(', ');
     return { code: 0, stdout: JSON.stringify({ decision: 'block', reason:
@@ -959,14 +973,14 @@ export function moveItem(root, ref, toRef, { date = today(), who = 'Claude' } = 
     if (it.parentName === to.name) return { error: `${it.id} уже в ${to.id}` };
     const oldDir = dirOf(it.file), newDir = `${dirOf(to.file)}/${oldDir.split('/').pop()}`;
     if (fs.existsSync(path.join(root, newDir))) return { error: `уже есть папка ${newDir}` };
-    const moves = new Map();
-    for (const x of plan.all) if (x.file.startsWith(oldDir + '/')) moves.set(x.file, newDir + x.file.slice(oldDir.length));
     const from = it.parentName;
+    // Сначала правки в заметке фичи, затем папка переезжает целиком — вместе с вложениями (картинки и пр.).
     applyChanges(plan, {
-      moves,
       fields: new Map([[it.file, { parent: `"[[${to.name}]]"` }]]),
       logs: new Map([[it.file, `- **${date} · ${who}:** перенесена из [[${from}]] в [[${to.name}]].`]]),
     });
+    fs.renameSync(path.join(root, oldDir), path.join(root, newDir));
+    fs.writeFileSync(path.join(root, 'Board.md'), renderBoard(loadPlan(root)));
     return { id: it.id, name: it.name, dir: newDir };
   }
   return { error: `переносить можно задачи и фичи, а ${it.id} — ${it.type}` };
@@ -1045,14 +1059,17 @@ export function findRoot(explicit) {
   return candidates.find((c) => fs.existsSync(c)) || null;
 }
 
-function parseArgs(argv) {
+// Флаги без значения: не забирают следующий аргумент (`show --json F01-01`).
+const BOOL_FLAGS = new Set(['json', 'stdout', 'force', 'dry-run', 'claude-md', 'obsidian', 'gitignore', 'help']);
+
+export function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) { args[key] = next; i++; } else args[key] = true;
+      if (!BOOL_FLAGS.has(key) && next !== undefined && !next.startsWith('--')) { args[key] = next; i++; } else args[key] = true;
     } else args._.push(a);
   }
   return args;
