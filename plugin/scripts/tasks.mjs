@@ -303,6 +303,160 @@ export function checkPlan(plan) {
   return { files: plan.all.length, errors, warnings };
 }
 
+// ─── Граф: блокировки, кандидаты, критический путь ─────────────────────────
+
+const isWork = (it) => !!TYPES[it.type]?.work;
+const CLOSED = ['done', 'cancelled'];
+const PRIORITY_RANK = { must: 0, should: 1, could: 2 };
+const sprintNum = (s) => (s && /^S-\d+$/.test(s) ? Number(s.slice(2)) : Infinity);
+
+// Для каждой задачи: незакрытые зависимости, кого она блокирует (вычисляется, не хранится).
+export function analyze(plan) {
+  const work = plan.items.filter(isWork).sort((a, b) => compareIds(a.id, b.id));
+  const byName = plan.byName;
+  for (const it of work) { it.blocks = []; it.openDeps = []; }
+  for (const it of work) {
+    for (const d of it.deps) {
+      const dep = d.name && byName.get(d.name);
+      if (!dep || !isWork(dep)) continue;
+      if (dep.status !== 'done') it.openDeps.push(dep);
+      dep.blocks.push(it);
+    }
+    it.openDeps.sort((a, b) => compareIds(a.id, b.id));
+  }
+  for (const it of work) it.blocks.sort((a, b) => compareIds(a.id, b.id));
+  const open = work.filter((it) => !CLOSED.includes(it.status));
+  const currentSprint = open.map((it) => it.fm.sprint).filter(Boolean).sort((a, b) => sprintNum(a) - sprintNum(b))[0] || null;
+  return { work, open, currentSprint };
+}
+
+// Кандидаты next: ready + все зависимости done. Порядок: текущий спринт → приоритет → сколько разблокирует → ID.
+export function nextCandidates(plan, { role } = {}) {
+  const { work, currentSprint } = analyze(plan);
+  const unblocks = (it) => it.blocks.filter((b) => !CLOSED.includes(b.status)).length;
+  return work
+    .filter((it) => it.status === 'ready' && it.openDeps.length === 0 && (!role || it.fm.role === role))
+    .sort((a, b) =>
+      (a.fm.sprint === currentSprint ? 0 : 1) - (b.fm.sprint === currentSprint ? 0 : 1) ||
+      (PRIORITY_RANK[a.fm.priority] ?? 9) - (PRIORITY_RANK[b.fm.priority] ?? 9) ||
+      unblocks(b) - unblocks(a) ||
+      compareIds(a.id, b.id))
+    .map((it) => ({ id: it.id, name: it.name, file: it.file, role: it.fm.role || null, priority: it.fm.priority, size: it.fm.size, sprint: it.fm.sprint || null, what: it.summary?.['Что'] || '', unblocks: it.blocks.filter((b) => !CLOSED.includes(b.status)).map((b) => b.id) }));
+}
+
+// Самая длинная цепочка незакрытых задач по зависимостям.
+export function criticalPath(plan) {
+  const { open } = analyze(plan);
+  const memo = new Map();
+  const longest = (it, seen = new Set()) => {
+    if (memo.has(it.name)) return memo.get(it.name);
+    if (seen.has(it.name)) return [it];
+    seen.add(it.name);
+    let best = [];
+    for (const b of it.blocks) if (!CLOSED.includes(b.status)) { const p = longest(b, seen); if (p.length > best.length) best = p; }
+    const res = [it, ...best]; memo.set(it.name, res); return res;
+  };
+  let best = [];
+  for (const it of open) if (it.openDeps.length === 0) { const p = longest(it); if (p.length > best.length) best = p; }
+  return best;
+}
+
+export function nextId(plan, type) {
+  const T = TYPES[type];
+  if (!T) throw new Error(`неизвестный тип «${type}»`);
+  const nums = plan.items.filter((it) => it.id && String(it.id).startsWith(T.prefix + '-')).map((it) => idNum(it.id)).filter(Number.isFinite);
+  return `${T.prefix}-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(T.width, '0')}`;
+}
+
+// ─── Доска ──────────────────────────────────────────────────────────────────
+
+const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+const link = (it) => `[[${it.name}]]`;
+const short = (it, table = true) => `[[${it.name}${table ? '\\|' : '|'}${it.id}]]`;
+const what = (it) => cell(it.summary?.['Что'] || '');
+
+export function renderBoard(plan) {
+  const { work, currentSprint } = analyze(plan);
+  const report = checkPlan(plan);
+  const sorted = (list) => [...list].sort((a, b) => compareIds(a.id, b.id));
+  const L = [];
+  const table = (head, rows) => {
+    if (!rows.length) { L.push('—', ''); return; }
+    L.push(`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.join(' | ')} |`), '');
+  };
+  const section = (title) => L.push(`## ${title}`, '');
+
+  L.push('# Доска', '');
+  L.push(`> Сгенерировано скриптом плагина (\`/task:board\`) — **руками не править**, изменения перезапишутся.${plan.byName.has('Readme') ? ' Как устроен план — [[Readme]].' : ''}`);
+  L.push(report.errors.length || report.warnings.length
+    ? `> Проверка плана: ошибок ${report.errors.length}, предупреждений ${report.warnings.length} — подробности: \`/task:board\`.`
+    : '> Проверка плана: ✓ без ошибок и предупреждений.');
+  L.push('');
+
+  const ready = work.filter((it) => it.status === 'ready' && it.openDeps.length === 0);
+  const blocked = work.filter((it) => ['draft', 'ready'].includes(it.status) && it.openDeps.length > 0);
+  const drafts = work.filter((it) => it.status === 'draft' && it.openDeps.length === 0);
+  const role = (it) => cell(it.fm.role || '—');
+  const unblocks = (it) => it.blocks.filter((b) => !CLOSED.includes(b.status)).map((b) => short(b)).join(', ') || '—';
+
+  section('Готово к работе');
+  table(['Задача', 'Роль', 'Коротко', 'Разблокирует'], sorted(ready).map((it) => [link(it), role(it), what(it), unblocks(it)]));
+  section('В работе');
+  table(['Задача', 'Роль', 'Коротко'], sorted(work.filter((it) => it.status === 'in-progress')).map((it) => [link(it), role(it), what(it)]));
+  section('На проверке');
+  table(['Задача', 'Роль', 'Коротко'], sorted(work.filter((it) => it.status === 'review')).map((it) => [link(it), role(it), what(it)]));
+  section('Черновики');
+  table(['Задача', 'Роль', 'Коротко'], sorted(drafts).map((it) => [link(it), role(it), what(it)]));
+  section('Заблокировано');
+  table(['Задача', 'Ждёт'], sorted(blocked).map((it) => [link(it), it.openDeps.map((d) => short(d)).join(', ')]));
+  section('Готово');
+  table(['Задача', 'Коротко'], sorted(work.filter((it) => it.status === 'done')).map((it) => [link(it), what(it)]));
+  const cancelled = sorted(work.filter((it) => it.status === 'cancelled'));
+  if (cancelled.length) { section('Отменено'); table(['Задача', 'Коротко'], cancelled.map((it) => [link(it), what(it)])); }
+
+  // Дерево плана
+  section('План');
+  const kids = (parent, type) => sorted(plan.items.filter((it) => it.type === type && it.parentName === parent.name));
+  const mark = (it) => (CLOSED.includes(it.status) ? `~~${short(it, false)}~~` : short(it, false));
+  const taskLine = (list) => list.map(mark).join(' · ');
+  const epics = sorted(plan.items.filter((it) => it.type === 'epic'));
+  for (const e of epics) {
+    L.push(`- ${link(e)} — ${e.status}`);
+    for (const f of kids(e, 'feature')) {
+      L.push(`  - ${link(f)} — ${f.status}`);
+      const ts = sorted(work.filter((it) => it.parentName === f.name));
+      if (ts.length) L.push(`    - ${taskLine(ts)}`);
+    }
+  }
+  const orphanF = sorted(plan.items.filter((it) => it.type === 'feature' && !epics.some((e) => e.name === it.parentName)));
+  const orphanT = sorted(work.filter((it) => !plan.items.some((f) => f.type === 'feature' && f.name === it.parentName)));
+  if (orphanF.length || orphanT.length) {
+    L.push('- Без родителя');
+    for (const f of orphanF) L.push(`  - ${link(f)} — ${f.status}`);
+    if (orphanT.length) L.push(`  - ${taskLine(orphanT)}`);
+  }
+  L.push('');
+
+  // Спринты и критический путь
+  const sprints = [...new Set(work.map((it) => it.fm.sprint).filter(Boolean))].sort((a, b) => sprintNum(a) - sprintNum(b));
+  for (const s of sprints) {
+    const ts = work.filter((it) => it.fm.sprint === s);
+    const closed = ts.filter((it) => CLOSED.includes(it.status)).length;
+    L.push(`**Спринт ${s}${s === currentSprint ? ' (текущий)' : ''}:** закрыто ${closed} из ${ts.length} — ${taskLine(sorted(ts))}`, '');
+  }
+  const cp = criticalPath(plan);
+  if (cp.length > 1) L.push(`**Критический путь:** ${cp.map((it) => short(it, false)).join(' → ')}`, '');
+
+  // ADR и бэклог
+  const adrs = sorted(plan.items.filter((it) => it.type === 'adr'));
+  if (adrs.length) { section('Решения (ADR)'); for (const a of adrs) L.push(`- ${link(a)} — ${a.status}`); L.push(''); }
+  section('Бэклог');
+  const ideas = sorted(plan.items.filter((it) => it.type === 'idea' && it.status === 'idea'));
+  if (ideas.length) for (const i of ideas) L.push(`- ${link(i)}`); else L.push('—');
+  L.push('');
+  return L.join('\n');
+}
+
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 export function findRoot(explicit) {
@@ -347,7 +501,10 @@ function printReport(root, report) {
 const USAGE = `Использование: node tasks.mjs <команда> [--root Docs/Tasks] [--json]
 
 Команды:
-  check    проверить формат и граф плана (код выхода 1, если есть ошибки)`;
+  check               проверить формат и граф плана (код выхода 1, если есть ошибки)
+  board [--stdout]    пересобрать Board.md (или вывести доску без записи)
+  next [--role R]     задачи, готовые к работе, в порядке очереди
+  new-id <тип>        следующий свободный ID для типа (epic, feature, task, research, bug, idea, adr)`;
 
 export function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -362,6 +519,30 @@ export function main(argv = process.argv.slice(2)) {
     if (args.json) console.log(JSON.stringify({ root, ...report }, null, 2));
     else printReport(root, report);
     return report.errors.length ? 1 : 0;
+  }
+  if (cmd === 'board') {
+    const text = renderBoard(plan);
+    if (args.stdout) { console.log(text); return 0; }
+    fs.writeFileSync(path.join(root, 'Board.md'), text);
+    const report = checkPlan(loadPlan(root));
+    const cands = nextCandidates(loadPlan(root));
+    if (args.json) { console.log(JSON.stringify({ root, board: 'Board.md', errors: report.errors, warnings: report.warnings, next: cands }, null, 2)); return 0; }
+    console.log(`Доска обновлена: ${path.join(root, 'Board.md')}`);
+    console.log(`Готово к работе: ${cands.length ? cands.map((c) => c.id).join(', ') : 'нет'}.`);
+    if (report.errors.length || report.warnings.length) { console.log(''); printReport(root, report); }
+    return 0;
+  }
+  if (cmd === 'next') {
+    const cands = nextCandidates(plan, { role: args.role === true ? undefined : args.role });
+    if (args.json) { console.log(JSON.stringify(cands, null, 2)); return 0; }
+    if (!cands.length) { console.log(args.role ? `Нет готовых задач для роли ${args.role}.` : 'Нет задач, готовых к работе.'); return 0; }
+    cands.forEach((c, i) => console.log(`${i + 1}. ${c.name}  [${c.priority}${c.size ? ', ' + c.size : ''}${c.role ? ', ' + c.role : ''}${c.sprint ? ', ' + c.sprint : ''}]\n   ${c.what}${c.unblocks.length ? `\n   Разблокирует: ${c.unblocks.join(', ')}` : ''}`));
+    return 0;
+  }
+  if (cmd === 'new-id') {
+    const type = args._[1];
+    if (!type) { console.error('Укажи тип: new-id task'); return 2; }
+    try { console.log(nextId(plan, type)); return 0; } catch (e) { console.error(e.message); return 2; }
   }
   console.error(`Неизвестная команда «${cmd}».\n\n${USAGE}`);
   return 2;

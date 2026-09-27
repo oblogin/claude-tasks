@@ -205,3 +205,72 @@ test('битая ссылка на доске', () => {
   p.B = { rel: 'Board.md', text: '# Доска\n\n[[T-404 Нет]]\n' };
   assert.ok(codes(check(p).errors).includes('broken-link'));
 });
+
+// ─── Доска, next, new-id (T-007) ────────────────────────────────────────────
+
+import { nextCandidates, renderBoard, nextId } from '../tasks.mjs';
+
+function withPlan(files, fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-'));
+  for (const f of Object.values(files)) {
+    const p = path.join(root, f.rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, f.text);
+  }
+  try { return fn(loadPlan(root), root); } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+const task = (id, title, fm) => file({ id, title, type: 'task', fm: { priority: 'must', size: 'S', parent: '"[[F-01 Фича]]"', depends_on: [], ...fm } });
+
+test('next: только ready без открытых зависимостей; порядок спринт → приоритет → разблокирует → ID', () => {
+  const p = basePlan();
+  p.T1 = task('T-001', 'Первая', { status: 'ready', priority: 'should' });
+  p.T2 = task('T-002', 'Вторая', { status: 'ready', depends_on: ['[[T-001 Первая]]'] });          // заблокирована
+  p.T3 = task('T-003', 'Третья', { status: 'ready', priority: 'should', sprint: 'S-02' });
+  p.T4 = task('T-004', 'Четвёртая', { status: 'ready', priority: 'must' });
+  p.T5 = task('T-005', 'Пятая', { status: 'ready', priority: 'must', sprint: 'S-01' });
+  p.T6 = task('T-006', 'Шестая', { status: 'draft' });
+  // T-001 разблокирует T-002 → при равном приоритете выше T-007
+  p.T7 = task('T-007', 'Седьмая', { status: 'ready', priority: 'should' });
+  const ids = withPlan(p, (plan) => nextCandidates(plan).map((c) => c.id));
+  // S-01 — текущий спринт (наименьший среди открытых задач)
+  assert.deepEqual(ids, ['T-005', 'T-004', 'T-001', 'T-003', 'T-007']);
+});
+
+test('next --role фильтрует по свободной метке', () => {
+  const p = basePlan();
+  p.T1 = task('T-001', 'Первая', { status: 'ready', role: 'artist' });
+  p.T2 = task('T-002', 'Вторая', { status: 'ready', role: 'qa' });
+  assert.deepEqual(withPlan(p, (plan) => nextCandidates(plan, { role: 'qa' }).map((c) => c.id)), ['T-002']);
+});
+
+test('доска: разделы, порядок по ID, «Ждёт» — только открытые зависимости, ссылки валидны', () => {
+  const p = basePlan();
+  p.T1 = task('T-001', 'Первая', { status: 'done' });
+  p.T3 = task('T-003', 'Третья', { status: 'in-progress' });
+  p.T2 = task('T-002', 'Вторая', { status: 'ready', depends_on: ['[[T-001 Первая]]', '[[T-003 Третья]]'] });
+  p.T10 = task('T-010', 'Десятая', { status: 'ready' });
+  p.T9 = task('T-009', 'Девятая', { status: 'ready' });
+  p.I1 = file({ id: 'I-001', title: 'Идея', type: 'idea', fm: { status: 'idea' } });
+  withPlan(p, (plan, root) => {
+    const board = renderBoard(plan);
+    for (const s of ['## Готово к работе', '## В работе', '## Заблокировано', '## Готово', '## План', '## Бэклог']) assert.ok(board.includes(s), s);
+    assert.ok(board.indexOf('[[T-009 Девятая]]') < board.indexOf('[[T-010 Десятая]]'), 'T-009 раньше T-010');
+    const blockedRow = board.split('\n').find((l) => l.startsWith('| [[T-002 Вторая]]'));
+    assert.equal(blockedRow, '| [[T-002 Вторая]] | [[T-003 Третья\\|T-003]] |');
+    assert.ok(board.includes('руками не править'));
+    fs.writeFileSync(path.join(root, 'Board.md'), board);
+    assert.deepEqual(checkPlan(loadPlan(root)).errors, [], 'ссылки доски валидны');
+  });
+});
+
+test('new-id: следующий номер с учётом всех файлов, ширина по типу', () => {
+  const p = basePlan();
+  p.T9 = task('T-009', 'Девятая', { status: 'cancelled' });
+  withPlan(p, (plan) => {
+    assert.equal(nextId(plan, 'task'), 'T-010');
+    assert.equal(nextId(plan, 'bug'), 'T-010');
+    assert.equal(nextId(plan, 'feature'), 'F-02');
+    assert.equal(nextId(plan, 'idea'), 'I-001');
+    assert.equal(nextId(plan, 'adr'), 'ADR-001');
+  });
+});

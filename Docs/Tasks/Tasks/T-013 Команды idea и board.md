@@ -2,7 +2,7 @@
 id: T-013
 type: task
 role: programmer
-status: draft
+status: ready
 priority: must
 size: S
 parent: "[[F-04 Команды]]"
@@ -24,3 +24,4 @@ created: 2026-09-27
 - [ ] `board` прогоняет проверку, пересобирает `Board.md` и выводит короткую сводку в чат
 
 ## Журнал
+- **2026-09-27 · programmer (Claude):** зависимости T-002, T-007 закрыты → `ready`; доска — `tasks.mjs board`, ID идеи — `tasks.mjs new-id idea`.
