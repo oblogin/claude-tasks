@@ -579,8 +579,10 @@ export function setStatus(plan, ref, status, { log, who = 'Claude', force = fals
   let parentComplete = null;
   const parent = self.parentName && fresh.byName.get(self.parentName);
   if (CLOSED.includes(status) && parent && !CLOSED.includes(parent.status)) {
-    const siblings = fresh.items.filter((x) => isWork(x) && x.parentName === parent.name);
-    if (siblings.every((x) => CLOSED.includes(x.status))) parentComplete = { id: parent.id, name: parent.name, status: parent.status };
+    // Соседи того же уровня: для задачи — задачи фичи, для фичи — фичи эпика.
+    const sameLevel = (x) => (isWork(self) ? isWork(x) : x.type === self.type);
+    const siblings = fresh.items.filter((x) => sameLevel(x) && x.parentName === parent.name);
+    if (siblings.length && siblings.every((x) => CLOSED.includes(x.status))) parentComplete = { id: parent.id, name: parent.name, status: parent.status };
   }
   return { item: showItem(fresh, it.id), unblocked, parentComplete };
 }

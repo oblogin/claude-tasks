@@ -107,6 +107,17 @@ test('set: закрыта последняя задача фичи → parentCom
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('set: закрытие фичи предлагает закрыть эпик, только когда закрыты все его фичи', () => {
+  const root = plan();
+  try {
+    const E = path.join(root, 'E-01 Эпик');
+    fs.mkdirSync(path.join(E, 'F-02 Вторая'), { recursive: true });
+    fs.writeFileSync(path.join(E, 'F-02 Вторая', 'F-02 Вторая.md'), note('id: F-02\ntype: feature\nstatus: ready\npriority: must\nparent: "[[E-01 Эпик]]"\ncreated: 2026-09-27', '# F-02 Вторая\n\n> **Что:** ф.\n> **Зачем:** ф.\n> **Готово, когда:** ф.\n\n## Журнал\n'));
+    assert.equal(setStatus(loadPlan(root), 'F-01', 'done', { log: 'готово.' }).parentComplete, null, 'F-02 ещё открыта');
+    assert.equal(setStatus(loadPlan(root), 'F-02', 'done', { log: 'готово.' }).parentComplete?.id, 'E-01');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('list: фильтр по статусам и типу', () => {
   const root = plan();
   try {
