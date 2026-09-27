@@ -1,0 +1,5 @@
+# Личные настройки Obsidian
+Docs/Tasks/.obsidian/
+
+# Зависимости npm
+node_modules/
