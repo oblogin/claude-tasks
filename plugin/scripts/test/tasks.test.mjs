@@ -177,6 +177,12 @@ test('done с неотмеченными критериями и без журн
   assert.ok(c.includes('empty-log'));
 });
 
+test('зачёркнутый критерий снят — done без предупреждения', () => {
+  const p = basePlan();
+  p.T1 = file({ id: 'T-001', title: 'Первая', type: 'task', sections: '## Критерии готовности\n\n- [x] сделано\n- [ ] ~~снято~~ → перенесено в [[T-002 Вторая]]\n\n## Журнал\n\n- **2026-09-27 · qa:** готово.\n', fm: { status: 'done', priority: 'must', size: 'S', parent: '"[[F-01 Фича]]"', depends_on: [] } });
+  assert.ok(!codes(check(p).warnings).includes('open-criteria'));
+});
+
 test('in-progress при незакрытой зависимости', () => {
   const p = basePlan();
   p.T2 = file({ id: 'T-002', title: 'Вторая', type: 'task', fm: { status: 'in-progress', priority: 'must', size: 'M', parent: '"[[F-01 Фича]]"', depends_on: ['[[T-001 Первая]]'] } });

@@ -139,8 +139,9 @@ export function parseItem(file, text) {
   item.heading = h1 ? h1[1] : null;
   item.summary = parseSummary(item.body);
   item.sections = parseSections(item.body);
-  const crit = (item.sections[H.criteria] || []).map((l) => l.match(/^\s*- \[( |x|X)\]/)).filter(Boolean);
-  item.criteria = { total: crit.length, open: crit.filter((c) => c[1] === ' ').length };
+  // Зачёркнутый неотмеченный критерий `- [ ] ~~…~~` — снят или перенесён (причина рядом), открытым не считается.
+  const crit = (item.sections[H.criteria] || []).map((l) => l.match(/^\s*- \[( |x|X)\]\s*(~~)?/)).filter(Boolean);
+  item.criteria = { total: crit.length, open: crit.filter((c) => c[1] === ' ' && !c[2]).length, waived: crit.filter((c) => c[1] === ' ' && c[2]).length };
   const log = item.sections[H.log];
   item.hasLog = !!log;
   item.logEntries = log ? stripComments(log.join('\n')).split('\n').filter((l) => /^- /.test(l)).length : 0;

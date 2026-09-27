@@ -91,7 +91,7 @@ test('show: карточка с зависимостями и обратными
     const c1 = showItem(p, 'T-001');
     assert.deepEqual(c1.blocks.map((b) => b.id), ['T-002']);
     assert.equal(c1.summary['Что'], 'Первая.');
-    assert.deepEqual(c1.criteria, { total: 1, open: 1 });
+    assert.deepEqual(c1.criteria, { total: 1, open: 1, waived: 0 });
     assert.deepEqual(showItem(p, 'T-002 Вторая').openDeps.map((d) => d.id), ['T-001']);
     assert.equal(showItem(p, 'T-404'), null);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
