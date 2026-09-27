@@ -269,6 +269,12 @@ export function checkPlan(plan) {
     if (it.type === 'adr' && it.status === 'superseded' && !it.fm.superseded_by) warn(it, 'no-superseded-by', 'ADR superseded, но нет superseded_by');
   }
 
+  // Закрытый research без ADR (ADR ссылается на задачу полем task)
+  const adrTasks = new Set(plan.items.filter((x) => x.type === 'adr').map((x) => linkValue(x.fm.task)).filter(Boolean));
+  for (const it of plan.items) {
+    if (it.type === 'research' && it.status === 'done' && !adrTasks.has(it.name)) warn(it, 'research-no-adr', 'research закрыт, но нет ADR с task: [[этой задачи]] — решение записано только в журнале?');
+  }
+
   // Зависимости: незакрытые у in-progress
   for (const it of plan.items) {
     if (!it.type || it.status !== 'in-progress') continue;
@@ -522,6 +528,31 @@ export function setStatus(plan, ref, status, { log, who = 'Claude', force = fals
   return { item: showItem(fresh, it.id), unblocked, parentComplete };
 }
 
+// Область пересмотра: незакрытые задачи, которые зависят от ref напрямую или по цепочке (с глубиной),
+// а для фичи/эпика — все незакрытые задачи внутри.
+export function affectedBy(plan, ref) {
+  analyze(plan);
+  const root = findItem(plan, ref);
+  if (!root) return null;
+  const out = new Map();
+  const add = (it, depth, via) => { if (!CLOSED.includes(it.status) && !out.has(it.name)) out.set(it.name, { id: it.id, name: it.name, status: it.status, depth, via }); };
+  if (isWork(root)) {
+    const queue = [[root, 0]];
+    const seen = new Set([root.name]);
+    while (queue.length) {
+      const [it, d] = queue.shift();
+      for (const b of it.blocks || []) {
+        if (seen.has(b.name)) continue;
+        seen.add(b.name); add(b, d + 1, it.id); queue.push([b, d + 1]);
+      }
+    }
+  } else {
+    const features = root.type === 'epic' ? plan.items.filter((f) => f.type === 'feature' && f.parentName === root.name) : [root];
+    for (const f of features) for (const t of plan.items.filter((x) => isWork(x) && x.parentName === f.name)) add(t, 0, f.id);
+  }
+  return { root: { id: root.id, name: root.name, type: root.type, status: root.status }, affected: [...out.values()].sort((a, b) => a.depth - b.depth || compareIds(a.id, b.id)) };
+}
+
 export function listItems(plan, { status, role, type } = {}) {
   analyze(plan);
   const statuses = status ? String(status).split(',') : null;
@@ -691,6 +722,7 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
                       создать файл из шаблона (ID, папка, frontmatter); тело заполнить после
   list [--status S[,S2]] [--role R] [--type T]
                       элементы плана по фильтру (например, --status in-progress)
+  affected <ID>       незакрытые задачи, которые зависят от задачи (по цепочке) или входят в фичу/эпик
   show <ID>           карточка: статус, «Коротко», критерии, незакрытые зависимости, кого блокирует
   set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force]
                       сменить статус, дописать запись в «Журнал», пересобрать доску;
@@ -772,6 +804,14 @@ export function main(argv = process.argv.slice(2)) {
     if (args.json) { console.log(JSON.stringify(res, null, 2)); return res.error ? 2 : 0; }
     if (res.error) { console.error(`Не создано: ${res.error}`); return 2; }
     console.log(`Создан ${res.name}: ${res.file}\nЗаполни «Коротко», критерии и остальные разделы, убери подсказки <!-- … -->, затем check.`);
+    return 0;
+  }
+  if (cmd === 'affected') {
+    const res = affectedBy(plan, args._[1]);
+    if (!res) { console.error(`«${args._[1]}» не найден.`); return 2; }
+    if (args.json) { console.log(JSON.stringify(res, null, 2)); return 0; }
+    console.log(`Затронуто изменениями в ${res.root.name}: ${res.affected.length ? '' : 'ничего (незакрытых зависимых задач нет)'}`);
+    for (const a of res.affected) console.log(`  ${a.name}  [${a.status}]  ← через ${a.via}`);
     return 0;
   }
   if (cmd === 'list') {

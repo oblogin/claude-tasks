@@ -118,3 +118,19 @@ test('list: фильтр по статусам и типу', () => {
     assert.deepEqual(listItems(p, { type: 'feature' }).map((x) => x.id), ['F-01']);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+import { affectedBy } from '../tasks.mjs';
+
+test('affected: цепочка зависимых задач с глубиной; для фичи — её незакрытые задачи', () => {
+  const root = plan();
+  try {
+    fs.writeFileSync(path.join(root, 'Tasks', 'T-003 Третья.md'), TASK('T-003', 'Третья', 'draft', '\n  - "[[T-002 Вторая]]"'));
+    fs.writeFileSync(path.join(root, 'Tasks', 'T-004 Четвёртая.md'), TASK('T-004', 'Четвёртая', 'done', '\n  - "[[T-001 Первая]]"', '\n- **2026-09-27 · qa:** готово.\n'));
+    const p = loadPlan(root);
+    const r = affectedBy(p, 'T-001');
+    assert.deepEqual(r.affected.map((a) => [a.id, a.depth, a.via]), [['T-002', 1, 'T-001'], ['T-003', 2, 'T-002']], 'закрытая T-004 не входит');
+    assert.deepEqual(affectedBy(p, 'F-01').affected.map((a) => a.id), ['T-001', 'T-002', 'T-003']);
+    assert.deepEqual(affectedBy(p, 'E-01').affected.map((a) => a.id), ['T-001', 'T-002', 'T-003']);
+    assert.equal(affectedBy(p, 'T-404'), null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

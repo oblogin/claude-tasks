@@ -206,6 +206,15 @@ test('нет журнала у задачи; идея done без promoted_to', 
   assert.ok(c.includes('no-promoted'));
 });
 
+test('research done без ADR — предупреждение; с ADR — нет', () => {
+  const p = basePlan();
+  const done = '## Критерии готовности\n\n- [x] к\n\n## Журнал\n\n- **2026-09-27 · architect:** готово.\n';
+  p.R = file({ id: 'T-003', title: 'Выбор', type: 'research', sections: done, fm: { status: 'done', priority: 'must', size: 'S', parent: '"[[F-01 Фича]]"', depends_on: [] } });
+  assert.ok(codes(check(p).warnings).includes('research-no-adr'));
+  p.A = file({ id: 'ADR-001', title: 'Решение', type: 'adr', fm: { status: 'accepted', task: '"[[T-003 Выбор]]"' } });
+  assert.ok(!codes(check(p).warnings).includes('research-no-adr'));
+});
+
 test('битая ссылка на доске', () => {
   const p = basePlan();
   p.B = { rel: 'Board.md', text: '# Доска\n\n[[T-404 Нет]]\n' };
