@@ -3,7 +3,7 @@ name: replan
 description: Пересмотреть будущие задачи — после того, что выяснилось в работе; правки списком «задача — что меняем — почему», вносятся после подтверждения.
 argument-hint: "[ID | все]"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Read, Edit, Skill, AskUserQuestion
+allowed-tools: Bash(node:*), PowerShell(node:*), Read, Edit, Skill, AskUserQuestion
 ---
 
 # /task:replan — пересмотр плана

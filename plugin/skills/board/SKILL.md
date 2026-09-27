@@ -2,7 +2,7 @@
 name: board
 description: Проверить план и пересобрать доску — короткая сводка в чат и предложения по найденным проблемам.
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Read, Edit, Skill
+allowed-tools: Bash(node:*), PowerShell(node:*), Read, Edit, Skill
 ---
 
 # /task:board — проверка плана и доска

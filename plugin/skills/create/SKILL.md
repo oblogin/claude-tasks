@@ -3,7 +3,7 @@ name: create
 description: Создать задачу, фичу или эпик через обсуждение — агент расспрашивает, что нужно, предлагает место в графе и пишет файл после подтверждения.
 argument-hint: "[что нужно]"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Read, Edit, Skill, AskUserQuestion
+allowed-tools: Bash(node:*), PowerShell(node:*), Read, Edit, Skill, AskUserQuestion
 ---
 
 # /task:create — новая задача через обсуждение

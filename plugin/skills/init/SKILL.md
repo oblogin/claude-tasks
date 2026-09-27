@@ -3,7 +3,7 @@ name: init
 description: Создать план задач в проекте — папки Docs/Tasks/, Readme, доска и правила для агентов в CLAUDE.md; по желанию — настройки Obsidian и .gitignore.
 argument-hint: "[все]"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Read
+allowed-tools: Bash(node:*), PowerShell(node:*), Read
 ---
 
 # /task:init — план задач в проекте

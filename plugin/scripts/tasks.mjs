@@ -779,7 +779,7 @@ export function runHook(event, input, env = process.env) {
     if (!stale.length) return none;
     const names = stale.map((it) => it.name).join(', ');
     return { code: 0, stdout: JSON.stringify({ decision: 'block', reason:
-      `Задача ${names} в работе (in-progress), но с момента, как ты её взял, в «Журнале» нет ни одной записи. Прежде чем закончить ответ:\n` +
+      `Задача ${names} в работе (in-progress), но после записи «взята в работу» в «Журнале» ничего нет — ни итога, ни того, на чём остановились. Следующий исполнитель (или ты в новой сессии) не узнает, что сделано. Прежде чем закончить ответ:\n` +
       `- работа закончена → отметь выполненные критерии и закрой: ${script} set <ID> done|review --log "итог…";\n` +
       `- работа продолжается или остановлена → запиши, что сделано и на чём остановился: ${script} set <ID> in-progress --log "…".\n` +
       'Если задачу взяли по ошибке — верни: set <ID> ready --log "причина".' }) };

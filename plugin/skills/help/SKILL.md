@@ -3,7 +3,7 @@ name: help
 description: Справка по командам — что есть и что делать сейчас; /task:help <команда> — подробнее об одной.
 argument-hint: "[команда]"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Read
+allowed-tools: Bash(node:*), PowerShell(node:*), Read
 ---
 
 # /task:help — справка

@@ -3,7 +3,7 @@ name: split
 description: Разбить эпик на фичи или фичу на задачи — сначала предложение списком с зависимостями, файлы после подтверждения.
 argument-hint: "<E-ID | F-ID>"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Read, Edit, Skill, AskUserQuestion
+allowed-tools: Bash(node:*), PowerShell(node:*), Read, Edit, Skill, AskUserQuestion
 ---
 
 # /task:split — декомпозиция
