@@ -7,7 +7,7 @@
 - **Корректировать план по ходу.** Закрыл задачу — агент предлагает поправить будущие, если что-то выяснилось.
 - **Смотреть план в Obsidian.** Задачи — обычные заметки, связи — ссылки `[[…]]`, граф зависимостей строится сам. Плагины Obsidian не нужны.
 
-> **Статус:** в разработке. Работают `/task:init`, `/task:next`, `/task:done`, скрипт проверки плана и доски; остальные команды — в работе (см. таблицу ниже). План разработки самого плагина ведётся в этом же формате — [Docs/Tasks/Board.md](Docs/Tasks/Board.md).
+> **Статус:** в разработке. Работают `/task:init`, `/task:create`, `/task:split`, `/task:next`, `/task:done`, скрипт проверки плана и доски; остальные команды — в работе (см. таблицу ниже). План разработки самого плагина ведётся в этом же формате — [Docs/Tasks/Board.md](Docs/Tasks/Board.md).
 
 ---
 
@@ -109,8 +109,8 @@ claude --plugin-dir C:\AI\claude-tasks\plugin
 |---------|-----------|:------:|
 | `/task:init` | Создать `Docs/Tasks/` в проекте: папки, Readme, доска, правила для агентов в `CLAUDE.md`; по желанию — настройки Obsidian и `.gitignore`. Повторный запуск безопасен | ✅ |
 | `/task:help` | Справка по командам | заглушка |
-| `/task:create` | Обсудить с агентом, что нужно, и оформить задачу (эпик, фичу) со связями в графе | 🔧 |
-| `/task:split` | Разбить эпик на фичи или фичу на задачи с зависимостями | 🔧 |
+| `/task:create` | Обсудить с агентом, что нужно, и оформить задачу (эпик, фичу, research, баг) со связями в графе. Файл пишется после вашего подтверждения черновика | ✅ |
+| `/task:split` | Разбить эпик на фичи или фичу на задачи с зависимостями; рискованные решения — отдельным research. Сначала список, файлы — после подтверждения | ✅ |
 | `/task:next` | Взять следующую готовую задачу (или конкретную `T-042`, или `--role gamedesigner`), выполнить её и закрыть — весь цикл в одной сессии | ✅ |
 | `/task:done` | Закрыть задачу отдельно: сверить критерии, записать итог, показать, что разблокировалось. Нужна, если работа шла без `/task:next`, растянулась на несколько сессий или задача ждала вашей проверки (`review`) | ✅ |
 | `/task:replan` | Пересмотреть будущие задачи — правки только после вашего подтверждения | 🔧 |
@@ -148,6 +148,7 @@ claude --plugin-dir C:\AI\claude-tasks\plugin
 node plugin/scripts/tasks.mjs check            # проверить план: формат, ссылки, циклы, статусы
 node plugin/scripts/tasks.mjs board            # пересобрать Docs/Tasks/Board.md
 node plugin/scripts/tasks.mjs next --role qa   # задачи, готовые к работе, в порядке очереди
+node plugin/scripts/tasks.mjs new task --title "Название" --parent F-01   # файл из шаблона
 node plugin/scripts/tasks.mjs new-id task      # следующий свободный ID
 node plugin/scripts/tasks.mjs show T-042       # карточка: «Коротко», критерии, зависимости, кого блокирует
 node plugin/scripts/tasks.mjs set T-042 done --log "итог"   # статус + запись в журнал + доска
@@ -172,11 +173,13 @@ plugin/                           ← сам плагин
 ├── skills/
 │   ├── format/SKILL.md           ← спецификация формата (скил task:format)
 │   ├── init/SKILL.md             ← /task:init
+│   ├── create/SKILL.md           ← /task:create
+│   ├── split/SKILL.md            ← /task:split
 │   ├── next/SKILL.md             ← /task:next
 │   ├── done/SKILL.md             ← /task:done
 │   └── help/SKILL.md             ← /task:help
 ├── scripts/
-│   ├── tasks.mjs                 ← check, board, next, list, show, set, new-id, init
+│   ├── tasks.mjs                 ← check, board, next, list, show, set, new, new-id, init
 │   └── test/                     ← тесты: node --test
 └── templates/                    ← шаблоны задач и файлов проекта
 Docs/Tasks/                       ← план разработки самого плагина (в плагин не входит)
