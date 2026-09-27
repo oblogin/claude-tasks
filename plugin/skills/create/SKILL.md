@@ -3,7 +3,7 @@ name: create
 description: Создать задачу, фичу или эпик через обсуждение — агент расспрашивает, что нужно, предлагает место в графе и пишет файл после подтверждения.
 argument-hint: "[что нужно]"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), PowerShell(node:*), Read, Edit, Skill, AskUserQuestion
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs":*), PowerShell(node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs":*), Read, Edit, Skill, AskUserQuestion
 ---
 
 # /task:create — новая задача через обсуждение
@@ -41,7 +41,7 @@ allowed-tools: Bash(node:*), PowerShell(node:*), Read, Edit, Skill, AskUserQuest
 ## 4. Записать
 
 1. `скрипт new <тип> --title "<название 2–6 слов>" --parent <ID> [--depends <ID>,<ID>] [--role <роль>] --priority <p> [--size <s>] --status <draft|ready> --json`
-   - `ready` — если есть критерии и понятно, как проверить; иначе `draft`.
+   - `ready` — если есть критерии и понятно, как проверить; иначе `draft`. Пустой пункт шаблона `- [ ]` критерием не считается: у `ready` без вписанных критериев `check` предупредит.
    - Скрипт сам выдаст ID, папку, имя файла и frontmatter. Ошибка — поправь аргументы.
 2. Открой созданный файл (`file` в ответе) и впиши согласованное тело вместо подсказок. **Удали все подсказки `<!-- … -->`**; необязательный раздел, в который нечего писать, убери («Коротко» и «Журнал» — не убирать).
 3. `скрипт check` — ошибок быть не должно; предупреждения о новом файле — исправь.

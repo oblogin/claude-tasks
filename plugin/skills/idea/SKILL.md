@@ -3,7 +3,7 @@ name: idea
 description: Записать идею в бэклог — одной фразой, без лишних вопросов (Docs/Tasks/Backlog/).
 argument-hint: "<идея>"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), PowerShell(node:*), Read, Edit
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs":*), PowerShell(node "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.mjs":*), Read, Edit
 ---
 
 # /task:idea — идея в бэклог

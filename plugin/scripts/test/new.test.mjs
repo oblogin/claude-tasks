@@ -33,7 +33,7 @@ test('new: эпик → фича → задачи с зависимостью; �
   assert.match(t1text, /^size: S$/m);
   const r = checkPlan(load(root));
   assert.deepEqual(r.errors, []);
-  assert.ok(r.warnings.every((w) => ['summary-empty', 'no-criteria'].includes(w.code)), 'только незаполненное тело');
+  assert.ok(r.warnings.every((w) => ['summary-empty', 'no-criteria', 'template-hints'].includes(w.code)), 'только незаполненное тело');
   assert.ok(fs.readFileSync(path.join(root, 'Board.md'), 'utf8').includes('[[F01-02 Модель прыжка]]'), 'доска обновлена');
 }));
 

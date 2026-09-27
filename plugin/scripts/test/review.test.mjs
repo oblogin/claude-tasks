@@ -52,19 +52,16 @@ test('3. хук не трогает план, если правится файл
   } finally { for (const d of [p, other, data]) fs.rmSync(d, { recursive: true, force: true }); }
 });
 
-test('4. состояние хуков — отдельный файл на сессию', () => {
+test('4. состояние хуков — отдельный файл на сессию (в служебной папке плана)', () => {
   const { p, root } = project();
-  const data = tmp('rev-data-');
   try {
-    setStatus(loadPlan(root), 'F01-01', 'in-progress', { log: 'взята.' });
-    const bash = (s) => ({ cwd: p, session_id: s, tool_name: 'Bash', tool_input: { command: 'node tasks.mjs set F01-01 in-progress --log x' } });
-    runHook('post-tool-use', bash('S1'), { CLAUDE_PLUGIN_DATA: data });
-    runHook('post-tool-use', bash('S2'), { CLAUDE_PLUGIN_DATA: data });
-    const files = fs.readdirSync(path.join(data, 'sessions')).sort();
+    setStatus(loadPlan(root), 'F01-01', 'in-progress', { log: 'взята.', session: 'S1' });
+    setStatus(loadPlan(root), 'F01-01', 'in-progress', { log: 'подхватила вторая сессия.', take: true, session: 'S2' });
+    const files = fs.readdirSync(path.join(root, '.claude-tasks', 'sessions')).sort();
     assert.equal(files.length, 2, files.join(', '));
-    assert.ok(runHook('stop', { cwd: p, session_id: 'S1' }, { CLAUDE_PLUGIN_DATA: data }).stdout.includes('block'));
-    assert.ok(runHook('stop', { cwd: p, session_id: 'S2' }, { CLAUDE_PLUGIN_DATA: data }).stdout.includes('block'));
-  } finally { for (const d of [p, data]) fs.rmSync(d, { recursive: true, force: true }); }
+    assert.ok(runHook('stop', { cwd: p, session_id: 'S1' }, {}).stdout === '', 'у S1 после взятия есть новая запись');
+    assert.ok(runHook('stop', { cwd: p, session_id: 'S2' }, {}).stdout.includes('block'));
+  } finally { fs.rmSync(p, { recursive: true, force: true }); }
 });
 
 test('6. дубль имени файла в разных папках — ошибка', () => {
