@@ -2,7 +2,7 @@
 id: T-007
 type: task
 role: programmer
-status: draft
+status: ready
 priority: must
 size: M
 parent: "[[F-03 Граф и доска]]"
@@ -30,3 +30,4 @@ created: 2026-09-27
 1. На плане этого репозитория доска совпадает с ручной `Board.md`.
 
 ## Журнал
+- **2026-09-27 · programmer (Claude):** зависимость T-006 закрыта → `ready`; разбор плана — `loadPlan` в `plugin/scripts/tasks.mjs`.
