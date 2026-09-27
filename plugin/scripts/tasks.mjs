@@ -532,6 +532,12 @@ export function showItem(plan, ref) {
   };
 }
 
+// Дописать запись в конец «Журнала» (текст с LF). Нет раздела — создаётся; первая запись отделена пустой строкой.
+export function appendLog(text, entry) {
+  if (!/^## Журнал\s*$/m.test(text)) text = text.replace(/\s*$/, '\n\n## Журнал\n');
+  return text.replace(/\s*$/, '\n') + (/## Журнал\s*$/.test(text.trimEnd()) ? '\n' : '') + entry + '\n';
+}
+
 // Ставит статус и дописывает запись в «Журнал». Возвращает { item, unblocked } или { error }.
 export function setStatus(plan, ref, status, { log, who = 'Claude', force = false, promotedTo, date = today() } = {}) {
   analyze(plan);
@@ -560,11 +566,7 @@ export function setStatus(plan, ref, status, { log, who = 'Claude', force = fals
     head = /^promoted_to:.*$/m.test(head) ? head.replace(/^promoted_to:.*$/m, line) : head.replace(/^(status:.*)$/m, `$1\n${line}`);
   }
   text = head + text.slice(fmEnd);
-  if (log) {
-    const entry = `- **${date} · ${who}:** ${log}`;
-    if (!/^## Журнал\s*$/m.test(text)) text = text.replace(/\s*$/, '\n\n## Журнал\n');
-    text = text.replace(/\s*$/, '\n') + (/## Журнал\s*$/.test(text.trimEnd()) ? '\n' : '') + entry + '\n';
-  }
+  if (log) text = appendLog(text, `- **${date} · ${who}:** ${log}`);
   fs.writeFileSync(file, text.replace(/\n/g, eol));
   const fresh = loadPlan(plan.root);
   fs.writeFileSync(path.join(plan.root, 'Board.md'), renderBoard(fresh));
@@ -839,6 +841,135 @@ export function runHook(event, input, env = process.env) {
   return none;
 }
 
+// ─── move / migrate: перенос и переход на иерархию (T-019) ──────────────────
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Переименования во всём тексте: ссылки [[старое имя…]] и упоминания старого ID (как отдельного слова).
+export function rewriteText(text, renames) {
+  for (const r of renames) text = text.replace(new RegExp(`\\[\\[${escapeRe(r.oldName)}(?=[\\]|#\\\\])`, 'g'), `[[${r.newName}`);
+  for (const r of renames) if (r.oldId !== r.newId) text = text.replace(new RegExp(`(?<![\\w-])${escapeRe(r.oldId)}(?![\\w-])`, 'g'), r.newId);
+  return text;
+}
+
+const setField = (text, key, value) => {
+  const fmEnd = text.indexOf('\n---', 4);
+  const head = text.slice(0, fmEnd);
+  const line = `${key}: ${value}`;
+  return (new RegExp(`^${key}:.*$`, 'm').test(head) ? head.replace(new RegExp(`^${key}:.*$`, 'm'), line) : `${head}\n${line}`) + text.slice(fmEnd);
+};
+
+// Применить план изменений: переименования в текстах всех файлов, новые места файлов, записи журнала.
+function applyChanges(plan, { renames = [], moves = new Map(), logs = new Map(), fields = new Map() }) {
+  const abs = (rel) => path.join(plan.root, rel);
+  const written = [];
+  for (const it of plan.all) {
+    const raw = fs.readFileSync(abs(it.file), 'utf8');
+    const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+    let text = rewriteText(raw.replace(/\r\n/g, '\n'), renames);
+    for (const [k, v] of Object.entries(fields.get(it.file) || {})) text = setField(text, k, v);
+    if (logs.has(it.file)) text = appendLog(text, logs.get(it.file));
+    const target = moves.get(it.file) || it.file;
+    if (target !== it.file && fs.existsSync(abs(target))) throw new Error(`уже есть файл ${target}`);
+    written.push([target, text.replace(/\n/g, eol), it.file]);
+  }
+  for (const [target, text, from] of written) {
+    fs.mkdirSync(path.dirname(abs(target)), { recursive: true });
+    fs.writeFileSync(abs(target), text);
+    if (target !== from) fs.rmSync(abs(from));
+  }
+  removeEmptyDirs(plan.root);
+  fs.writeFileSync(path.join(plan.root, 'Board.md'), renderBoard(loadPlan(plan.root)));
+}
+
+// Удалить пустые папки (и папки только с .gitkeep), кроме корня и Backlog/, Adr/.
+function removeEmptyDirs(root) {
+  (function walk(dir) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) if (e.isDirectory() && !e.name.startsWith('.')) walk(path.join(dir, e.name));
+    if (dir === root || FLAT_FOLDERS.includes(path.relative(root, dir))) return;
+    const rest = fs.readdirSync(dir).filter((n) => n !== '.gitkeep');
+    if (!rest.length) fs.rmSync(dir, { recursive: true, force: true });
+  })(root);
+}
+
+// Перевод плана в иерархию: эпики и фичи — в папки, задачи — ID внутри фичи (по порядку старых ID).
+// Повторный запуск на иерархическом плане ничего не меняет.
+export function migratePlan(root, { dryRun = false, date = today(), who = 'Claude' } = {}) {
+  const plan = loadPlan(root);
+  const moves = new Map(); const renames = []; const logs = new Map(); const skipped = [];
+  const place = (it, rel) => { if (rel !== it.file) moves.set(it.file, rel); };
+  const dirOf = (rel) => rel.split('/').slice(0, -1).join('/');
+  const target = new Map(); // имя → новый относительный путь
+  for (const e of plan.items.filter((x) => x.type === 'epic')) target.set(e.name, `${e.name}/${e.name}.md`);
+  for (const f of plan.items.filter((x) => x.type === 'feature')) {
+    const e = f.parentName && target.get(f.parentName);
+    if (!e) { skipped.push(`${f.name}: нет эпика — оставлен на месте`); target.set(f.name, f.file); continue; }
+    target.set(f.name, `${dirOf(e)}/${f.name}/${f.name}.md`);
+  }
+  for (const f of plan.items.filter((x) => x.type === 'feature')) {
+    const code = featureCode(f.id);
+    const tasks = plan.items.filter((x) => isWork(x) && x.parentName === f.name).sort((a, b) => compareIds(a.id, b.id));
+    const own = new RegExp(`^${code}-(\\d{2})$`);
+    let n = Math.max(0, ...tasks.map((t) => String(t.id).match(own)).filter(Boolean).map((m) => Number(m[1])));
+    for (const t of tasks) {
+      let id = t.id, name = t.name;
+      if (!own.test(t.id)) {
+        if (++n > 99) throw new Error(`в фиче ${f.id} больше 99 задач — разбей фичу до перехода`);
+        id = `${code}-${String(n).padStart(2, '0')}`;
+        name = id + t.name.slice(String(t.id).length);
+        renames.push({ oldId: t.id, newId: id, oldName: t.name, newName: name });
+        logs.set(t.file, `- **${date} · ${who}:** ID изменён при переходе на иерархию плана: ${t.id} → ${id}.`);
+      }
+      target.set(name, `${dirOf(target.get(f.name))}/${name}.md`);
+      place(t, target.get(name));
+    }
+  }
+  for (const it of plan.items) if (['epic', 'feature'].includes(it.type)) place(it, target.get(it.name));
+  for (const it of plan.items) if (isWork(it) && !plan.byName.get(it.parentName || '')) skipped.push(`${it.name}: нет фичи — оставлена на месте`);
+  const result = { renames: renames.map(({ oldId, newId }) => ({ oldId, newId })), moved: moves.size, skipped };
+  if (!dryRun && (moves.size || renames.length)) applyChanges(plan, { renames, moves, logs });
+  return result;
+}
+
+// Перенос: задача → другая фича (новый ID в ней), фича → другой эпик (ID не меняются).
+export function moveItem(root, ref, toRef, { date = today(), who = 'Claude' } = {}) {
+  const plan = loadPlan(root);
+  const it = findItem(plan, ref), to = findItem(plan, toRef);
+  if (!it) return { error: `«${ref}» не найден` };
+  if (!to) return { error: `«${toRef}» не найден` };
+  const dirOf = (rel) => rel.split('/').slice(0, -1).join('/');
+  if (isWork(it)) {
+    if (to.type !== 'feature') return { error: `задачу можно перенести только в фичу, а ${to.id} — ${to.type}` };
+    if (it.parentName === to.name) return { error: `${it.id} уже в ${to.id}` };
+    const newId = nextId(plan, it.type, to.id);
+    const newName = newId + it.name.slice(String(it.id).length);
+    const from = it.parentName;
+    applyChanges(plan, {
+      renames: [{ oldId: it.id, newId, oldName: it.name, newName }],
+      moves: new Map([[it.file, `${dirOf(to.file)}/${newName}.md`]]),
+      fields: new Map([[it.file, { parent: `"[[${to.name}]]"` }]]),
+      logs: new Map([[it.file, `- **${date} · ${who}:** перенесена из [[${from}]] в [[${to.name}]]: ID ${it.id} → ${newId}.`]]),
+    });
+    return { id: newId, oldId: it.id, name: newName };
+  }
+  if (it.type === 'feature') {
+    if (to.type !== 'epic') return { error: `фичу можно перенести только в эпик, а ${to.id} — ${to.type}` };
+    if (it.parentName === to.name) return { error: `${it.id} уже в ${to.id}` };
+    const oldDir = dirOf(it.file), newDir = `${dirOf(to.file)}/${oldDir.split('/').pop()}`;
+    if (fs.existsSync(path.join(root, newDir))) return { error: `уже есть папка ${newDir}` };
+    const moves = new Map();
+    for (const x of plan.all) if (x.file.startsWith(oldDir + '/')) moves.set(x.file, newDir + x.file.slice(oldDir.length));
+    const from = it.parentName;
+    applyChanges(plan, {
+      moves,
+      fields: new Map([[it.file, { parent: `"[[${to.name}]]"` }]]),
+      logs: new Map([[it.file, `- **${date} · ${who}:** перенесена из [[${from}]] в [[${to.name}]].`]]),
+    });
+    return { id: it.id, name: it.name, dir: newDir };
+  }
+  return { error: `переносить можно задачи и фичи, а ${it.id} — ${it.type}` };
+}
+
 // ─── init: структура плана в проекте ────────────────────────────────────────
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -953,6 +1084,8 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
                       создать файл из шаблона (ID, папка, frontmatter); тело заполнить после
   list [--status S[,S2]] [--role R] [--type T]
                       элементы плана по фильтру (например, --status in-progress)
+  move <ID> --to <ID> перенести задачу в другую фичу (новый ID) или фичу в другой эпик; ссылки правятся
+  migrate [--dry-run] перевести плоский план в иерархию (эпик/фича — папки, задачи — ID внутри фичи)
   affected <ID>       незакрытые задачи, которые зависят от задачи (по цепочке) или входят в фичу/эпик
   show <ID>           карточка: статус, «Коротко», критерии, незакрытые зависимости, кого блокирует
   set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force] [--promoted-to ID]
@@ -1060,6 +1193,25 @@ export function main(argv = process.argv.slice(2)) {
     if (args.json) { console.log(JSON.stringify(res, null, 2)); return res.error ? 2 : 0; }
     if (res.error) { console.error(`Не создано: ${res.error}`); return 2; }
     console.log(`Создан ${res.name}: ${res.file}\nЗаполни «Коротко», критерии и остальные разделы, убери подсказки <!-- … -->, затем check.`);
+    return 0;
+  }
+  if (cmd === 'move') {
+    const to = args.to === true ? undefined : args.to;
+    if (!args._[1] || !to) { console.error('Использование: move <ID задачи> --to <F-ID> | move <F-ID> --to <E-ID>'); return 2; }
+    const res = moveItem(root, args._[1], to, { who: args.who === true ? undefined : args.who });
+    if (args.json) { console.log(JSON.stringify(res, null, 2)); return res.error ? 2 : 0; }
+    if (res.error) { console.error(`Не перенесено: ${res.error}`); return 2; }
+    console.log(res.oldId ? `${res.oldId} → ${res.name}; ссылки обновлены, доска пересобрана.` : `${res.name} → ${res.dir}/; доска пересобрана.`);
+    return 0;
+  }
+  if (cmd === 'migrate') {
+    const res = migratePlan(root, { dryRun: !!args['dry-run'] });
+    if (args.json) { console.log(JSON.stringify(res, null, 2)); return 0; }
+    if (!res.moved && !res.renames.length) { console.log('План уже в иерархии — менять нечего.'); return 0; }
+    console.log(`${args['dry-run'] ? 'Будет' : 'Сделано'}: перемещено файлов ${res.moved}, новых ID ${res.renames.length}.`);
+    for (const r of res.renames) console.log(`  ${r.oldId} → ${r.newId}`);
+    for (const s of res.skipped) console.log(`  пропущено: ${s}`);
+    if (!args['dry-run']) console.log('Ссылки и упоминания ID в файлах плана обновлены. Проверь файлы вне плана (README, код) на старые ID.');
     return 0;
   }
   if (cmd === 'affected') {
