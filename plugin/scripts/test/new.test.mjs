@@ -63,3 +63,20 @@ test('new: ошибки ввода не создают файлов', () => proj
   for (const [type, opts, re] of cases) assert.match(createItem(load(root), type, opts).error, re, JSON.stringify(opts));
   assert.equal(load(root).items.length, 1, 'создан только эпик');
 }));
+
+import { setStatus } from '../tasks.mjs';
+
+test('идея → задача: promoted_to и статус done, проверка без предупреждений об идее', () => project((root) => {
+  createItem(load(root), 'epic', { title: 'Э' });
+  createItem(load(root), 'feature', { title: 'Ф', parent: 'E-01' });
+  const idea = createItem(load(root), 'idea', { title: 'Кооператив' });
+  const task = createItem(load(root), 'task', { title: 'Кооп-режим', parent: 'F-01' });
+  assert.match(setStatus(load(root), 'I-001', 'done', { promotedTo: 'T-999' }).error, /не найден/);
+  assert.match(setStatus(load(root), 'T-001', 'done', { promotedTo: 'F-01' }).error, /только для идей/);
+  const res = setStatus(load(root), idea.id, 'done', { promotedTo: task.id, log: 'взята в план.' });
+  assert.equal(res.error, undefined);
+  const text = fs.readFileSync(idea.file, 'utf8');
+  assert.match(text, /^status: done\npromoted_to: "\[\[T-001 Кооп-режим\]\]"$/m);
+  const w = checkPlan(load(root)).warnings.filter((x) => x.id === 'I-001').map((x) => x.code);
+  assert.ok(!w.includes('no-promoted'));
+}));

@@ -488,7 +488,7 @@ export function showItem(plan, ref) {
 }
 
 // Ставит статус и дописывает запись в «Журнал». Возвращает { item, unblocked } или { error }.
-export function setStatus(plan, ref, status, { log, who = 'Claude', force = false, date = today() } = {}) {
+export function setStatus(plan, ref, status, { log, who = 'Claude', force = false, promotedTo, date = today() } = {}) {
   analyze(plan);
   const it = findItem(plan, ref);
   if (!it) return { error: `задача «${ref}» не найдена` };
@@ -498,12 +498,22 @@ export function setStatus(plan, ref, status, { log, who = 'Claude', force = fals
   if (status === 'in-progress' && it.openDeps?.length && !force) {
     return { error: `не закрыты зависимости: ${it.openDeps.map((d) => `${d.id} (${d.status})`).join(', ')}. Взять всё равно — с --force`, code: 'open-deps' };
   }
+  let promoted = null;
+  if (promotedTo) {
+    if (it.type !== 'idea') return { error: '--promoted-to — только для идей' };
+    promoted = findItem(plan, promotedTo);
+    if (!promoted) return { error: `promoted_to: «${promotedTo}» не найден` };
+  }
   const file = path.join(plan.root, it.file);
   let text = fs.readFileSync(file, 'utf8');
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   text = text.replace(/\r\n/g, '\n');
   const fmEnd = text.indexOf('\n---', 4);
-  const head = text.slice(0, fmEnd).replace(/^status:.*$/m, `status: ${status}`);
+  let head = text.slice(0, fmEnd).replace(/^status:.*$/m, `status: ${status}`);
+  if (promoted) {
+    const line = `promoted_to: "[[${promoted.name}]]"`;
+    head = /^promoted_to:.*$/m.test(head) ? head.replace(/^promoted_to:.*$/m, line) : head.replace(/^(status:.*)$/m, `$1\n${line}`);
+  }
   text = head + text.slice(fmEnd);
   if (log) {
     const entry = `- **${date} · ${who}:** ${log}`;
@@ -724,7 +734,7 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
                       элементы плана по фильтру (например, --status in-progress)
   affected <ID>       незакрытые задачи, которые зависят от задачи (по цепочке) или входят в фичу/эпик
   show <ID>           карточка: статус, «Коротко», критерии, незакрытые зависимости, кого блокирует
-  set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force]
+  set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force] [--promoted-to ID]
                       сменить статус, дописать запись в «Журнал», пересобрать доску;
                       in-progress при незакрытых зависимостях — только с --force
   init [--project DIR] [--claude-md] [--obsidian] [--gitignore]
@@ -787,7 +797,7 @@ export function main(argv = process.argv.slice(2)) {
   if (cmd === 'set') {
     const [, ref, status] = args._;
     if (!ref || !status) { console.error('Использование: set <ID> <статус> [--log "текст"] [--who "роль (агент)"] [--force]'); return 2; }
-    const res = setStatus(plan, ref, status, { log: args.log === true ? undefined : args.log, who: args.who === true ? undefined : args.who, force: !!args.force });
+    const res = setStatus(plan, ref, status, { log: args.log === true ? undefined : args.log, who: args.who === true ? undefined : args.who, force: !!args.force, promotedTo: args['promoted-to'] === true ? undefined : args['promoted-to'] });
     if (args.json) { console.log(JSON.stringify(res, null, 2)); return res.error ? (res.code === 'open-deps' ? 3 : 2) : 0; }
     if (res.error) { console.error(`Не сделано: ${res.error}`); return res.code === 'open-deps' ? 3 : 2; }
     console.log(`${res.item.name}: статус ${res.item.status}${args.log ? ', запись в журнале добавлена' : ''}; доска обновлена.`);
