@@ -767,9 +767,7 @@ export function setStatus(plan, ref, status, { log, who = 'Claude', force = fals
       const siblings = childrenOf(fresh, parent);
       if (siblings.length && siblings.every((x) => CLOSED.includes(x.status))) parentComplete = brief(parent);
     }
-    // Закрыли фичу или эпик, а внутри остались открытые задачи или фичи — о них надо решить отдельно.
-    const openChildren = CLOSED.includes(status) ? childrenOf(fresh, self).filter((x) => !CLOSED.includes(x.status)).map(brief) : [];
-    return { item: showItem(fresh, it.id), logged: !!entry, unblocked, waiting, parentComplete, openChildren };
+    return { item: showItem(fresh, it.id), logged: !!entry, unblocked, waiting, parentComplete };
   });
 }
 
@@ -1566,7 +1564,6 @@ function run(cmd, args) {
       const pc = res.parentComplete;
       console.log(res.item.type === 'feature' ? `Все фичи эпика ${pc.name} закрыты — его можно закрыть: set ${pc.id} done.` : `Все задачи фичи ${pc.name} закрыты — её можно закрыть: set ${pc.id} done.`);
     }
-    if (res.openChildren.length) console.log(`Внутри остались открытыми: ${ids(res.openChildren)} — закрой, отмени или перенеси их (move).`);
     return 0;
   }
   if (cmd === 'new') {
