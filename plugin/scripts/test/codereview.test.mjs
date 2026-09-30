@@ -194,11 +194,50 @@ test('7. битая зависимость блокирует; отменённ�
   assert.deepEqual(T.setStatus(load(), 'F01-01', 'cancelled', { log: 'не нужна.' }).waiting.map((x) => x.id), ['F01-02']);
   assert.ok(codes(T.checkPlan(load()).warnings).includes('dep-cancelled'));
   assert.match(T.renderBoard(load()), /\(отменена\)/);
-  // (3) отменили фичу
-  assert.deepEqual(T.setStatus(load(), 'F-02', 'cancelled', { log: 'фича отменена.' }).openChildren.map((x) => x.id), ['F02-01']);
+  // (3) фичу с открытой задачей не отменить; закрыта руками (старый план) — задача не выдаётся, check — ошибка
+  assert.equal(T.setStatus(load(), 'F-02', 'cancelled', { log: 'фича отменена.' }).code, 'open-children');
+  const f2file = T.showItem(load(), 'F-02').file;
+  fs.writeFileSync(f2file, read(f2file).replace(/^status: .*$/m, 'status: cancelled'));
   assert.ok(!T.nextCandidates(load()).some((c) => c.id === 'F02-01'));
-  assert.ok(codes(T.checkPlan(load()).warnings).includes('parent-closed'));
-  assert.equal(T.setStatus(load(), 'F02-01', 'in-progress', {}).code, 'parent-closed');
+  assert.ok(codes(T.checkPlan(load()).errors).includes('parent-closed'));
+  assert.equal(T.setStatus(load(), 'F02-01', 'in-progress', { force: true }).code, 'parent-closed', 'и с --force');
+}));
+
+test('7. закрытая фича или эпик закрыты для задач: new, move, повторное открытие — отказ; закрыть с открытыми внутри — отказ', () => project(({ root, make, load }) => {
+  make('task', { title: 'Готовая', parent: 'F-01', status: 'ready' });
+  make('task', { title: 'Открытая', parent: 'F-02', status: 'ready' });
+  // закрыть фичу, пока внутри открыта задача, нельзя — ни done, ни cancelled
+  const busy = T.setStatus(load(), 'F-01', 'done', {});
+  assert.equal(busy.code, 'open-children');
+  assert.match(busy.error, /F01-01 \(ready\)/);
+  assert.equal(T.setStatus(load(), 'F-01', 'cancelled', {}).code, 'open-children');
+  // закрыли задачу — фича закрывается
+  T.setStatus(load(), 'F01-01', 'done', { log: 'готово.' });
+  assert.equal(T.setStatus(load(), 'F-01', 'done', { log: 'все задачи закрыты.' }).error, undefined);
+  // в закрытую фичу новое не заводят
+  const nw = T.createItem(load(), 'task', { title: 'Поздняя', parent: 'F-01' });
+  assert.equal(nw.code, 'parent-closed');
+  assert.match(nw.error, /F-01 — done/);
+  // и открытую задачу туда не переносят
+  assert.equal(T.moveItem(root, 'F02-01', 'F-01').code, 'parent-closed');
+  // закрытую задачу внутри снова не открывают
+  assert.equal(T.setStatus(load(), 'F01-01', 'ready', {}).code, 'parent-closed');
+  // открыли фичу — снова можно
+  T.setStatus(load(), 'F-01', 'in-progress', { log: 'открыта снова: нужна ещё задача.' });
+  assert.equal(make('task', { title: 'Поздняя', parent: 'F-01' }).id, 'F01-02');
+  // эпик: не закрыть с открытыми фичами; в закрытый эпик фичу не завести; фичу внутри не открыть
+  assert.equal(T.setStatus(load(), 'E-02', 'done', { log: 'пустой эпик.' }).error, undefined);
+  assert.equal(T.createItem(load(), 'feature', { title: 'Три', parent: 'E-02' }).code, 'parent-closed');
+  assert.equal(T.setStatus(load(), 'E-01', 'done', {}).code, 'open-children');
+  // CLI: отказ — код 3
+  const r = cli(path.dirname(path.dirname(root)), ['new', 'task', '--title', 'Ещё', '--parent', 'F-02']);
+  assert.equal(r.status, 0, r.stderr);
+  T.setStatus(load(), 'F02-01', 'cancelled', { log: 'не нужна.' });
+  T.setStatus(load(), 'F02-02', 'cancelled', { log: 'не нужна.' });
+  T.setStatus(load(), 'F-02', 'cancelled', { log: 'отменена.' });
+  const s = cli(path.dirname(path.dirname(root)), ['set', 'F02-01', 'ready']);
+  assert.equal(s.status, 3);
+  assert.match(s.stderr, /закрытую фичу или эпик/);
 }));
 
 // ─── 8. ID не переиспользуются ──────────────────────────────────────────────
@@ -403,7 +442,9 @@ test('18. set: запись — в раздел «Журнал», даже ес�
   const before = read(u.file);
   assert.match(T.setStatus(load(), 'F01-02 Без статуса', 'draft').error, /нет поля id/);
   assert.equal(read(u.file), before, 'файл не тронут');
-  // итоговое сообщение для эпика — про фичи
+  // итоговое сообщение для эпика — про фичи (фичу закрывают после её задач)
+  fs.writeFileSync(u.file, read(u.file).replace(/^type: task$/m, 'id: F01-02\ntype: task'));
+  for (const id of ['F01-01', 'F01-02']) assert.equal(T.setStatus(load(), id, 'cancelled').error, undefined);
   T.setStatus(load(), 'F-02', 'done');
   const out = cli(p, ['set', 'F-01', 'cancelled', '--log', 'отменена.']);
   assert.match(out.stdout, /Все фичи эпика E-01 Первый закрыты/);

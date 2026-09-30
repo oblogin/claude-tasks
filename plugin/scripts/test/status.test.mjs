@@ -113,6 +113,7 @@ test('set: закрытие фичи предлагает закрыть эпи�
     const E = path.join(root, 'E-01 Эпик');
     fs.mkdirSync(path.join(E, 'F-02 Вторая'), { recursive: true });
     fs.writeFileSync(path.join(E, 'F-02 Вторая', 'F-02 Вторая.md'), note('id: F-02\ntype: feature\nstatus: ready\npriority: must\nparent: "[[E-01 Эпик]]"\ncreated: 2026-09-27', '# F-02 Вторая\n\n> **Что:** ф.\n> **Зачем:** ф.\n> **Готово, когда:** ф.\n\n## Журнал\n'));
+    for (const id of ['F01-01', 'F01-02']) setStatus(loadPlan(root), id, 'done', { log: 'готово.' });
     assert.equal(setStatus(loadPlan(root), 'F-01', 'done', { log: 'готово.' }).parentComplete, null, 'F-02 ещё открыта');
     assert.equal(setStatus(loadPlan(root), 'F-02', 'done', { log: 'готово.' }).parentComplete?.id, 'E-01');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

@@ -407,12 +407,12 @@ export function checkPlan(plan, { board = true } = {}) {
       if (it.status === 'in-progress' && dep.status !== 'done') warn(it, 'in-progress-blocked', `in-progress, но зависимость [[${d.name}]] — ${dep.status}`);
       if (dep.status === 'cancelled') warn(it, 'dep-cancelled', `зависимость [[${d.name}]] отменена — задача не станет готовой: убери или замени зависимость`);
     }
-    if (it.parentClosed) warn(it, 'parent-closed', `${kindOf(it.parentClosed)} [[${it.parentClosed.name}]] — ${it.parentClosed.status}, а задача открыта: отмени её, перенеси (move) или открой родителя`);
+    if (it.parentClosed) err(it, 'parent-closed', `${kindOf(it.parentClosed)} [[${it.parentClosed.name}]] — ${it.parentClosed.status}, а задача открыта: отмени её, перенеси (move) в открытую фичу или открой родителя`);
   }
   for (const f of plan.items) {
     if (f.type !== 'feature' || CLOSED.includes(f.status)) continue;
     const e = f.parentName && plan.byName.get(f.parentName);
-    if (e?.type === 'epic' && CLOSED.includes(e.status)) warn(f, 'parent-closed', `эпик [[${e.name}]] — ${e.status}, а фича открыта`);
+    if (e?.type === 'epic' && CLOSED.includes(e.status)) err(f, 'parent-closed', `эпик [[${e.name}]] — ${e.status}, а фича открыта: закрой или перенеси фичу либо открой эпик`);
   }
   // Больше одной in-progress задачи у роли
   const byRole = new Map();
@@ -454,6 +454,14 @@ function closedParent(plan, it) {
   const e = f.parentName && plan.byName.get(f.parentName);
   return e?.type === 'epic' && CLOSED.includes(e.status) ? e : null;
 }
+
+// Закрыт ли контейнер — сама фича (эпик) или эпик фичи. В закрытый контейнер новое не добавляют.
+function closedContainer(plan, group) {
+  if (CLOSED.includes(group.status)) return group;
+  const e = group.type === 'feature' && group.parentName && plan.byName.get(group.parentName);
+  return e?.type === 'epic' && CLOSED.includes(e.status) ? e : null;
+}
+const closedMsg = (c) => `${kindOf(c)} ${c.id} — ${c.status}: в закрытую фичу или эпик задачи не добавляют и не открывают. Выбери открытую фичу или сначала открой ${c.id} (set ${c.id} in-progress)`;
 
 // Для каждой задачи: незакрытые зависимости, кого она блокирует (вычисляется, не хранится), закрытый родитель.
 // Считается один раз на загруженный план.
@@ -720,8 +728,15 @@ export function setStatus(plan, ref, status, { log, who = 'Claude', force = fals
     if (starting && it.openDeps?.length && !force) {
       return { error: `не закрыты зависимости: ${it.openDeps.map(depLabel).join(', ')}. Взять всё равно — с --force`, code: 'open-deps' };
     }
-    if (starting && it.parentClosed && !force) {
-      return { error: `${kindOf(it.parentClosed)} ${it.parentClosed.id} — ${it.parentClosed.status}: задачи закрытого родителя в работу не берут. Взять всё равно — с --force`, code: 'parent-closed' };
+    // Закрытый родитель: задачу или фичу внутри него не открывают (ни в работу, ни обратно в draft/ready) — даже с --force.
+    if (!CLOSED.includes(status)) {
+      const c = T.work ? it.parentClosed : it.type === 'feature' && it.parentName ? closedContainer(cur, cur.byName.get(it.parentName) || {}) : null;
+      if (c) return { error: closedMsg(c), code: 'parent-closed' };
+    }
+    // Фичу или эпик не закрывают, пока внутри есть открытые задачи или фичи.
+    if (CLOSED.includes(status) && !T.work && ['feature', 'epic'].includes(it.type)) {
+      const open = childrenOf(cur, it).filter((x) => !CLOSED.includes(x.status));
+      if (open.length) return { error: `внутри ${it.id} открыты: ${open.map((x) => `${x.id} (${x.status})`).join(', ')} — сначала закрой, отмени или перенеси их (move)`, code: 'open-children' };
     }
     let promoted = null;
     if (promotedTo) {
@@ -905,6 +920,8 @@ export function createItem(plan, type, { title, parent, depends = [], role, prio
         if (!parent) return { error: `для ${type} нужен родитель (${T.parent}): --parent <ID>` };
         parentItem = resolve(parent, 'parent');
         if (parentItem.type !== T.parent) return { error: `родитель ${type} должен быть ${T.parent}, а ${parentItem.id} — ${parentItem.type}` };
+        const closed = closedContainer(cur, parentItem);
+        if (closed) return { error: closedMsg(closed), code: 'parent-closed' };
       }
       if (T.work) depItems = depends.map((d) => resolve(d, 'depends_on'));
       for (const d of depItems) if (!isWork(d)) return { error: `зависеть можно только от задач, а ${d.id} — ${d.type}` };
@@ -1230,6 +1247,8 @@ export function moveItem(root, ref, toRef, { date = today(), who = 'Claude' } = 
     if (isWork(it)) {
       if (to.type !== 'feature') return { error: `задачу можно перенести только в фичу, а ${to.id} — ${to.type}` };
       if (it.parentName === to.name) return { error: `${it.id} уже в ${to.id}` };
+      const closedTo = !CLOSED.includes(it.status) && closedContainer(plan, to);
+      if (closedTo) return { error: closedMsg(closedTo), code: 'parent-closed' };
       const toDir = ownDir(to);
       if (!toDir) return { error: notOwn(to) };
       const newId = nextId(plan, it.type, to.id);
@@ -1245,6 +1264,7 @@ export function moveItem(root, ref, toRef, { date = today(), who = 'Claude' } = 
     if (it.type === 'feature') {
       if (to.type !== 'epic') return { error: `фичу можно перенести только в эпик, а ${to.id} — ${to.type}` };
       if (it.parentName === to.name) return { error: `${it.id} уже в ${to.id}` };
+      if (!CLOSED.includes(it.status) && CLOSED.includes(to.status)) return { error: closedMsg(to), code: 'parent-closed' };
       // Переезжает папка самой фичи — вместе с задачами и вложениями. Если заметка лежит не в своей папке,
       // её папка — чужая (эпик, общая папка плоского плана): переносить её целиком нельзя.
       const fromDir = ownDir(it);
@@ -1535,7 +1555,7 @@ function run(cmd, args) {
       promotedTo: value(args, 'promoted-to', '--promoted-to <ID>'),
       session: process.env.TASK_SESSION_ID || process.env.CLAUDE_CODE_SESSION_ID || undefined,
     });
-    const code = res.error ? (['open-deps', 'parent-closed'].includes(res.code) ? 3 : 2) : 0;
+    const code = res.error ? (['open-deps', 'parent-closed', 'open-children'].includes(res.code) ? 3 : 2) : 0;
     if (args.json) { console.log(JSON.stringify(res, null, 2)); return code; }
     if (res.error) { console.error(`Не сделано: ${res.error}`); return code; }
     const ids = (list) => list.map((u) => `${u.id || u.name} (${u.status})`).join(', ');
