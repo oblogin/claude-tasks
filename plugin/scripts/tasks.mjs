@@ -1459,7 +1459,10 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
   help [команда]      справка по командам плагина (из самих скилов) и что делать сейчас
   init [--project DIR] [--claude-md] [--obsidian] [--gitignore] [--force]
                       создать Docs/Tasks/ в проекте (существующее не трогает);
-                      флаги — блок в CLAUDE.md, настройки Obsidian, .obsidian в .gitignore`;
+                      флаги — блок в CLAUDE.md, настройки Obsidian, .obsidian в .gitignore
+  hook <session-start|post-tool-use|stop>
+                      служебная: обработчик хуков плагина (JSON события — в stdin), вручную не вызывается;
+                      выключить в проекте — env TASK_HOOKS=off`;
 
 export function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
