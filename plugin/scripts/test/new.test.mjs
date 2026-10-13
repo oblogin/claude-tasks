@@ -73,10 +73,49 @@ test('идея → задача: promoted_to и статус done, провер�
   const task = createItem(load(root), 'task', { title: 'Кооп-режим', parent: 'F-01' });
   assert.match(setStatus(load(root), 'I-001', 'done', { promotedTo: 'F01-99' }).error, /не найден/);
   assert.match(setStatus(load(root), 'F01-01', 'done', { promotedTo: 'F-01' }).error, /только для идей/);
-  const res = setStatus(load(root), idea.id, 'done', { promotedTo: task.id, log: 'взята в план.' });
+  const res = setStatus(load(root), idea.id, 'done', { promotedTo: task.id, date: '2026-10-13' });
   assert.equal(res.error, undefined);
   const text = fs.readFileSync(idea.file, 'utf8');
   assert.match(text, /^status: done\npromoted_to: "\[\[F01-01 Кооп-режим\]\]"$/m);
   const w = checkPlan(load(root)).warnings.filter((x) => x.id === 'I-001').map((x) => x.code);
   assert.ok(!w.includes('no-promoted'));
+}));
+
+test('идея: перенос пишет строку «Взята в план» без журнала; повтор её заменяет', () => project((root) => {
+  createItem(load(root), 'epic', { title: 'Э' });
+  createItem(load(root), 'feature', { title: 'Ф', parent: 'E-01' });
+  createItem(load(root), 'feature', { title: 'Г', parent: 'E-01' });
+  const idea = createItem(load(root), 'idea', { title: 'Кооператив' });
+  assert.equal(setStatus(load(root), idea.id, 'done', { promotedTo: 'F-01', date: '2026-10-13' }).error, undefined);
+  let text = fs.readFileSync(idea.file, 'utf8');
+  assert.match(text, /\n\n\*\*Взята в план:\*\* \[\[F-01 Ф\]\] \(2026-10-13\)\.\n$/);
+  assert.doesNotMatch(text, /## Журнал/);
+  assert.equal(setStatus(load(root), idea.id, 'done', { promotedTo: 'F-02', date: '2026-10-14' }).error, undefined);
+  text = fs.readFileSync(idea.file, 'utf8');
+  assert.equal(text.match(/\*\*Взята в план:\*\*/g).length, 1);
+  assert.match(text, /\*\*Взята в план:\*\* \[\[F-02 Г\]\] \(2026-10-14\)\.\n$/);
+  const w = checkPlan(load(root)).warnings.filter((x) => x.id === idea.id).map((x) => x.code);
+  assert.ok(!w.includes('log-not-allowed') && !w.includes('no-promoted'), w.join());
+}));
+
+test('idea и adr: --log отклоняется, файл не меняется', () => project((root) => {
+  createItem(load(root), 'epic', { title: 'Э' });
+  createItem(load(root), 'feature', { title: 'Ф', parent: 'E-01' });
+  const idea = createItem(load(root), 'idea', { title: 'Идея' });
+  const adr = createItem(load(root), 'adr', { title: 'Решение' });
+  for (const [it, status, opts] of [[idea, 'done', { promotedTo: 'F-01' }], [idea, 'cancelled', {}], [adr, 'accepted', {}]]) {
+    const before = fs.readFileSync(it.file, 'utf8');
+    const res = setStatus(load(root), it.id, status, { ...opts, log: 'текст.' });
+    assert.equal(res.code, 'no-journal', it.id);
+    assert.match(res.error, /нет журнала/);
+    assert.equal(fs.readFileSync(it.file, 'utf8'), before, it.id);
+  }
+}));
+
+test('check: журнал в идее или ADR — предупреждение log-not-allowed', () => project((root) => {
+  const idea = createItem(load(root), 'idea', { title: 'Идея' });
+  const adr = createItem(load(root), 'adr', { title: 'Решение' });
+  for (const it of [idea, adr]) fs.appendFileSync(it.file, '\n## Журнал\n\n- **2026-10-13 · x (Claude):** запись.\n');
+  const w = checkPlan(load(root)).warnings.filter((x) => x.code === 'log-not-allowed').map((x) => x.id).sort();
+  assert.deepEqual(w, [adr.id, idea.id].sort());
 }));

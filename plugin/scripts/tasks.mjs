@@ -377,6 +377,7 @@ export function checkPlan(plan, { board = true } = {}) {
       else if (!it.summary[label]) warn(it, 'summary-empty', `в «Коротко» пустая строка **${label}:**`);
     }
     if (T.journal && !it.hasLog) warn(it, 'no-log', 'нет раздела «## Журнал»');
+    if (!T.journal && it.hasLog) warn(it, 'log-not-allowed', `у ${it.type} нет журнала — раздел «## Журнал» лишний${it.type === 'idea' ? '; отметка о переносе — строка «**Взята в план:** …»' : ''}`);
     if (it.status !== 'draft') {
       const left = hints.filter((h) => it.body.includes(h)).length;
       if (left) warn(it, 'template-hints', `остались подсказки шаблона <!-- … --> (${left}) — допиши файл и удали их`);
@@ -670,6 +671,12 @@ export function showItem(plan, ref) {
   };
 }
 
+// Отметка о переносе идеи в план — строка в конце тела (журнала у идей нет); повторный перенос её заменяет.
+export function setPromotedLine(text, name, date) {
+  const body = text.replace(/^\*\*Взята в план:\*\*.*(?:\n|$)/gm, '').replace(/\s*$/, '');
+  return `${body}\n\n**Взята в план:** [[${name}]] (${date}).\n`;
+}
+
 // Поле frontmatter: заменить `key: …` (вместе со строками его списка) или добавить после поля after, иначе в конец frontmatter.
 export function setField(text, key, value, { after } = {}) {
   const m = text.match(/^---\n([\s\S]*?)\n---(?=\n|$)/);
@@ -744,11 +751,17 @@ export function setStatus(plan, ref, status, { log, who = 'Claude', force = fals
       promoted = findItem(cur, promotedTo);
       if (!promoted) return { error: `promoted_to: «${promotedTo}» не найден` };
     }
+    if (log && !T.journal) {
+      return { error: `у ${it.type} нет журнала — --log не используется${it.type === 'idea' ? '; отметку «Взята в план» скрипт пишет сам при --promoted-to' : ''}`, code: 'no-journal' };
+    }
     const entry = log ? logEntry(date, who, log) : null;
     const file = path.join(cur.root, it.file);
     const doc = readText(file);
     let text = setField(doc.text, 'status', status, { after: 'type' });
-    if (promoted) text = setField(text, 'promoted_to', `"[[${promoted.name}]]"`, { after: 'status' });
+    if (promoted) {
+      text = setField(text, 'promoted_to', `"[[${promoted.name}]]"`, { after: 'status' });
+      text = setPromotedLine(text, promoted.name, date);
+    }
     if (entry) text = appendLog(text, entry);
     writeText(file, text, doc);
     const fresh = loadPlan(cur.root);
@@ -1455,7 +1468,8 @@ const USAGE = `Использование: node tasks.mjs <команда> [--ro
                       сменить статус, дописать запись в «Журнал», пересобрать доску;
                       --log - — текст из stdin (Markdown без искажений оболочкой);
                       in-progress при незакрытых зависимостях — только с --force;
-                      --take — продолжить свою задачу в новой сессии (напоминание хука Stop)
+                      --take — продолжить свою задачу в новой сессии (напоминание хука Stop);
+                      --promoted-to — идея взята в план (promoted_to и строка «Взята в план»); у idea и adr журнала нет — --log отклоняется
   help [команда]      справка по командам плагина (из самих скилов) и что делать сейчас
   init [--project DIR] [--claude-md] [--obsidian] [--gitignore] [--force]
                       создать Docs/Tasks/ в проекте (существующее не трогает);
